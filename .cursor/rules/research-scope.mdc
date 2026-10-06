@@ -1,0 +1,20 @@
+---
+description: Scope of this CCTV research, bound to the problem-positioning note
+alwaysApply: true
+---
+
+# Research scope
+
+The scope of this research is `notes/PROBLEM_POSITIONING.pdf` (source: `notes/PROBLEM_POSITIONING.tex`). Read that PDF before restating the problem, choosing a benchmark, adding a dataset, or changing the method.
+
+Stay inside its seven headings, in this order:
+
+1. Πρόβλημα — one line.
+2. Σημαντικό — one line, under the problem.
+3. Έμμεσες λύσεις, and why they do not suffice.
+4. Σχετικές μέθοδοι, and why they do not solve this problem.
+5. Μέθοδοι σύγκρισης — only GT-Loc (ICCV 2025, \(RGB \times 1\) to month–hour and location), VideoFACT (WACV 2024, \(RGB \times T\) to a frame label and a \(128\times128\) mask), Bitstream CCTV (Colour and Visual Computing Symposium 2022, \(GOP \times 27\) to a forgery class), and Padilha et al. (IEEE TIFS, still image plus time and location to consistent/inconsistent). Do not restore unresolved scan readings such as Elgamal, EC, or CG/IS.
+6. Προτεινόμενη μέθοδος — \((RGB \times T)\) plus timestamp, bitstream/GOP, and camera context, toward consistent/inconsistent, tampering type, and modality attribution; fixed-view motion comparison with attention; timestamp + weather for missing outputs.
+7. Novelty — the consistent-aware, camera-aware, time-aware CCTV sentence in the PDF. Do not restore the crossed-out word "attentive".
+
+Proof of the method is code, through random reimplementation and external validation. Hidden datasets, and timestamp + weather as a prior, stay open. If a later note conflicts with the PDF, the PDF wins until the user revises it.
