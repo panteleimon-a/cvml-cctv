@@ -1,3 +1,13 @@
+## Layout
+
+- `notebooks/` — GT-Loc run code. Phase 1 reproduces the released checkpoint on SkyFinder.
+- `docs/` — study plan, problem positioning, and the progress report.
+- `slides/` — progress slides. Earlier drafts are in `slides/drafts/`.
+- `figures/` — figures included by the slides.
+- `literature/` — saved paper and dataset notes.
+- `data/` — local CCT20 metadata. The JSON is not committed.
+- `scratch/` — intermediate dumps, not part of the write-up.
+
 # cvml-cctv
 
 ## Problem positioning (5 Oct 2026)

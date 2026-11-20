@@ -1,0 +1,123 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1.7cm]{geometry}
+\usepackage{fontspec}
+\usepackage[table]{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{hyperref}
+
+\setmainfont{Times New Roman}
+\setsansfont{Arial}
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{rule}{HTML}{C5D4E4}
+\definecolor{light}{HTML}{EAF1F7}
+\hypersetup{colorlinks=true,urlcolor=accent,pdftitle={Problem positioning}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.28em}
+\setlength{\leftmargini}{1.15em}
+\pagestyle{empty}
+
+\newcommand{\slot}[1]{%
+  \par\vspace{0.72em}%
+  {\sffamily\bfseries\color{accent}\large ]\enspace #1}\par\vspace{0.18em}%
+}
+\newcommand{\subslot}[1]{%
+  \par\vspace{0.15em}\hspace{1.15em}%
+  {\sffamily\bfseries\color{accent}#1}\par\vspace{0.12em}%
+}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\begin{center}
+{\sffamily\bfseries\LARGE problem positioning}\\[0.25em]
+{\footnotesize\color{accent} CCTV as a time-aware sensor \textbar\ scope note, 5 October 2026}
+\end{center}
+
+\slot{Πρόβλημα: 1-line}
+
+Εντοπισμός ανωμαλιών συνέπειας σε CCTV, όταν η κάμερα διαβάζεται ως time-aware sensor: visual temporal cues, timestamps και codec behaviour μαζί.
+
+\subslot{Σημαντικό: 1-line}
+
+Η οπτική της CCTV είναι σταθερή, τα timestamps και ο καιρός αφήνουν ελλιπείς εξόδους, και το resampling είναι high frequency.
+
+\slot{Έμμεσες λύσεις $\rightarrow$ γιατί δεν φτάνουν;}
+
+\begin{itemize}
+  \item \textbf{GT-Loc} εκτιμά image $\rightarrow$ time (month--hour) και βρίσκει τα αυθόρμητα στον χρόνο, αλλά έχει προβλήματα και θέλει νέο benchmark. Δεν ενώνει timestamp, codec και σταθερή οπτική σε έναν εντοπισμό ανωμαλίας.
+  \item \textbf{timestamp + καιρός}, για ελλιπείς εξόδους, μένουν prior. Το resampling είναι high frequency, άρα δεν κλείνουν την ασυνέπεια.
+  \item \textbf{VideoFACT} αγνοεί τα timestamps και μένει σε representation: $1024\times1024$ σε transformer block / encoder $8\times8$, temporal block που θέλει 5 frames και aggregation $5\,\mathrm{m}\times5\,\mathrm{m}$. Αυτό δεν είναι το graph μιας σταθερής κάμερας.
+\end{itemize}
+
+\slot{Σχετικές μέθοδοι, γιατί δεν μας λύνουν}
+
+\begin{itemize}
+  \item \textbf{GT-Loc} απαντά πότε και πού: \(RGB \rightarrow (\mathrm{time},\mathrm{location})\). Δεν ελέγχει αν εικόνα, timestamp και codec συμφωνούν, και δεν παίρνει video ή bitstream.
+  \item \textbf{VideoFACT} βγάζει frame label και spatial mask από \(RGB \times T\). Δεν έχει timestamp ή location, άρα δεν κρίνει αν το timestamp είναι σωστό.
+  \item \textbf{Bitstream CCTV} πάει από \(GOP \times 27\) σε forgery class, μόνο στο compressed domain. Δεν βλέπει RGB ούτε timestamp.
+  \item \textbf{Padilha et al.} πάνε \((RGB,\mathrm{time},\mathrm{location}) \rightarrow \{\mathrm{consistent},\mathrm{inconsistent}\}\) σε μία still εικόνα. Δεν πιάνουν codec behaviour ούτε το fixed-view motion graph.
+\end{itemize}
+
+\slot{Με ποιες μεθόδους μπορούμε να συγκριθούμε}
+
+Οι τέσσερις γραμμές δεν λύνουν την ίδια διάσταση. Το time του GT-Loc είναι month--hour, κυκλικό σε ώρες και μήνες. Το CVCS είναι το Colour and Visual Computing Symposium 2022. Το IEEE TIFS είναι το Transactions on Information Forensics and Security, από τη δουλειά του 2021.
+
+\scriptsize
+\rowcolors{2}{light}{white}
+\renewcommand{\arraystretch}{1.32}
+\begin{tabularx}{\linewidth}{@{}
+  >{\hsize=.62\hsize}Y
+  >{\hsize=1.15\hsize}Y
+  >{\hsize=1.20\hsize}Y
+  >{\hsize=1.15\hsize}Y
+  >{\hsize=.88\hsize}Y @{}}
+\toprule
+\textbf{Venue} & \textbf{Problem} & \textbf{Target} & \textbf{Dimension} & \textbf{Method} \\
+\midrule
+ICCV 2025 & when and where was this image captured & hour, month, location & \(RGB \times 1\); time = month--hour & GT-Loc \\
+WACV 2024 & is this frame falsified, and where & frame \(\{0,1\}\); \(128\times128\) block mask & \(RGB \times T\); no timestamp & VideoFACT \\
+CVCS 2022 & insertion, deletion, duplication, or permutation & unaltered vs forged; forgery class & \(GOP \times 27\); not RGB & Bitstream CCTV \\
+IEEE TIFS & are image, time, and location consistent & consistent vs manipulated & \(RGB \times 1\) + time + location & Padilha et al. \\
+\bottomrule
+\end{tabularx}
+\normalsize
+
+\vspace{0.4em}
+Η αγκύλη του πίνακα δένει κάθε γραμμή με το μοντέλο σύγκρισης:
+
+\begin{itemize}
+  \item \textbf{GT-Loc:} CLIP ViT-L/14 ως image encoder, συν time και location encoders σε κοινό retrieval space. Temporal Metric Learning για κυκλικό month--hour.
+  \item \textbf{VideoFACT:} forensic branch και scene/context branch, με attention σε χώρο και χρόνο. Δύο heads, frame detection και block localization. Το loss είναι οι δύο cross-entropies.
+  \item \textbf{Bitstream CCTV:} στατιστικά H.264/MPEG-4 (bitrate, quantization, motion vectors, macroblock types, GOP structure), μετά LightGBM. Η ανάγνωση του bitstream περνά από entropy decoding, CAVLC / CABAC.
+  \item \textbf{Padilha et al.:} CNN για την εικόνα, ξεχωριστοί encoders για time και location, fusion, και consistency classifier. Κύριος στόχος το binary cross-entropy. Βοηθητικά: time-of-day και month. Μπορεί να εκτιμήσει capture time όταν λείπει το metadata.
+\end{itemize}
+
+Η σύγκριση πολυπλοκότητας δεν είναι κοινό FLOP count. Σε κοινό πρωτόκολλο αναφέρονται parameters, FLOPs, latency και memory.
+
+\slot{Προτεινόμενη μέθοδος (όταν ΔΕΝ γράφουμε σε άλλες σελίδες)}
+
+\begin{itemize}
+  \item Η διάσταση που ενώνει τις τέσσερις γραμμές είναι \((RGB \times T)\) + timestamp features + bitstream/GOP features + camera context, προς consistent/inconsistent, tampering type, και modality attribution.
+  \item Η CCTV έχει σταθερή οπτική. Το corruption είναι διαφορετικό εκεί όπου η κάμερα είναι σταθερή, και το graph είναι διαφορετικό.
+  \item Ανίχνευση αυξημένου motion, με σύγκριση προς αυτό που είναι κανονικό και προς αυτό που δεν είναι.
+  \item Η comparison συνάρτηση βγάζει motion vector. Από πάνω της κάθεται attention.
+  \item timestamp + καιρός μπαίνουν μαζί, για τις ελλιπείς εξόδους. Το resampling μένει high frequency.
+  \item Υλοποίηση: random reimplementation και external validation.
+  \item Απόδειξη: code.
+  \item Ανοιχτό: κρυμμένα datasets, και ξανά timestamp + καιρός.
+\end{itemize}
+
+\slot{Novelty}
+
+Unified, camera-aware multimodal framework that treats CCTV as a time-aware sensor, jointly modeling visual temporal cues, timestamps and codec behaviour to produce a consistent-aware model capable of locating those anomalies.
+
+\vspace{1.1em}
+{\color{rule}\rule{\linewidth}{0.4pt}}
+\vspace{0.35em}
+{\footnotesize\color{accent} Arranged from the handwritten problem-positioning sheet of 5 October 2026. Unclear benchmarking cells are filled from the prior comparison note: CVCS is the Colour and Visual Computing Symposium, the bitstream row is \(GOP \times 27\) rather than a misread name, VideoFACT localizes on \(128\times128\) blocks, and Padilha et al.\ is IEEE TIFS. The word ``attentive'' was struck out of the novelty sentence and is not part of the claim. The word «αυθόρμητα» on the GT-Loc line is kept as read.}
+
+\end{document}

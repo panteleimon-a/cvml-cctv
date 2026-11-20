@@ -1,0 +1,154 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=1.7cm]{geometry}
+\usepackage{fontspec}
+\usepackage[table]{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{pdflscape}
+\usepackage{fancyhdr}
+
+\setmainfont{Times New Roman}
+\setsansfont{Arial}
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{light}{HTML}{EAF1F7}
+\hypersetup{
+  colorlinks=true,
+  urlcolor=accent,
+  pdftitle={GT-Loc Reimplementation and CCT Validation Progress}
+}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.42em}
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.16}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\footnotesize GT-Loc External Validation}
+\rhead{\footnotesize Progress Update --- 30 September 2026}
+\cfoot{\thepage}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\begin{landscape}
+
+\begin{center}
+{\sffamily\bfseries\LARGE GT-Loc Reimplementation and CCT Validation}\\[0.35em]
+{\sffamily\large Progress update following our summer meeting}
+\end{center}
+
+\section*{Reminder: benchmarking presented at the previous meeting}
+
+As a brief throwback to our last meeting in the summer, the table below is a shortened version of the benchmarking I presented then. It situates GT-Loc against metadata-consistency, codec/bitstream, and general video-forensics approaches. The columns have been reduced to the method's core question, input dimensions, model, outputs, and dominant computational cost.
+
+\footnotesize
+\rowcolors{2}{light}{white}
+\begin{tabularx}{\linewidth}{
+  >{\hsize=.65\hsize}Y
+  >{\hsize=1.05\hsize}Y
+  >{\hsize=.72\hsize}Y
+  >{\hsize=1.45\hsize}Y
+  >{\hsize=1.00\hsize}Y
+  >{\hsize=.90\hsize}Y
+  >{\hsize=.72\hsize}Y}
+\toprule
+\textbf{Method} & \textbf{Question} & \textbf{Input} & \textbf{Model} & \textbf{Outputs} & \textbf{Cost} & \textbf{Source} \\
+\midrule
+GT-Loc &
+When and where was this image captured? &
+$1$ RGB image; time/GPS galleries &
+CLIP image encoder plus time and location encoders in a shared retrieval space; cyclic temporal metric loss &
+Hour, month, GPS, retrieval similarities &
+ViT encoding plus $O(Nd)$ gallery search &
+ICCV 2025 oral \\
+
+Padilha et al. &
+Are the image, claimed time, and location mutually consistent? &
+$1$ RGB image + time + GPS &
+CNN visual encoder and separate time/location encoders fused for consistency classification &
+Consistent/manipulated; auxiliary temporal attributes &
+CNN-dominated; fusion $O(d)$--$O(d^2)$ &
+IEEE TIFS \\
+
+Bitstream CCTV detection &
+Does the encoded video contain frame insertion, deletion, duplication, or permutation? &
+$G \times 27$ GOP features &
+H.264/MPEG-4 coding statistics classified with LightGBM or gradient boosting &
+Authentic/forged; forgery type &
+$O(B)$ parsing; tree inference $O(TD)$ &
+CVCS 2022 \\
+
+VideoFACT &
+Is the video falsified, and where is the manipulated region? &
+$T$ RGB frames; $128{\times}128$ blocks &
+Forensic and scene branches combined by attention, with detection and localization heads &
+Frame-level decision and spatial tamper map &
+$O(TC_{\mathrm{frame}})$; attention up to $O(N^2d)$ &
+WACV 2024 \\
+\bottomrule
+\end{tabularx}
+
+\normalsize
+\section*{Actions agreed at that meeting}
+
+We agreed to use GT-Loc as the immediate benchmark, reimplement it while restricting inference to the time-prediction scope needed for our study, and externally validate it before developing the direct model comparison. Codec/bitstream-based CCTV analysis was left for future work rather than included in the present baseline.
+
+\end{landscape}
+
+\clearpage
+
+\section*{How I approached the reimplementation}
+
+GT-Loc jointly learns image, time, and geographic representations. Since our present question concerns timestamp estimation, I instantiated only the image and time encoders and omitted the location encoder and GPS galleries during inference.
+
+The CLIP ViT-L/14 visual backbone is frozen, while the official learned image projection and time encoder are retained. This evaluates the released model without fine-tuning on SkyFinder or CCT and avoids unnecessary geolocation computation. More precisely, this is \emph{time-only inference from the jointly trained GT-Loc checkpoint}, not a newly trained time-only model: the image representation still inherits knowledge acquired from joint temporal and geographic supervision.
+
+I implemented this workflow in \texttt{GTLOC\_PHASE1\_COLAB.ipynb}. The notebook pins the official repository commit, downloads and fingerprints the released checkpoint, loads the image/time weights, applies the official TenCrop preprocessing, encodes the released time gallery, performs exact cosine retrieval, calculates circular ToY/ToD errors and TPS, and saves per-image predictions and experiment provenance.
+
+I also located the SkyFinder images and the validation metadata required by the official repository:
+N. Jacobs and R. P. Mihail, \emph{SkyFinder Dataset}, Zenodo, 2016
+(\url{https://doi.org/10.5281/zenodo.5884485}).
+
+\section*{SkyFinder reproduction results}
+
+I successfully completed the validation run on all 6,052 images referenced by the released SkyFinder validation split.
+
+\begin{center}
+\small
+\rowcolors{2}{light}{white}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Metric} & \textbf{Published GT-Loc} & \textbf{Reproduced} & \textbf{Difference} \\
+\midrule
+Images evaluated & --- & 6,052 & --- \\
+ToY mean error (months) & 1.4000 & 1.4919 & $+0.0919$ \\
+ToD mean error (hours) & 2.7200 & 2.6704 & $-0.0496$ \\
+TPS (\%) & 77.0000 & 76.4047 & $-0.5953$ pp \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The reproduction is close to the published benchmark: hour error is slightly lower, month error is slightly higher, and the combined TPS differs by approximately 0.60 percentage points. This gives a sufficiently consistent baseline for proceeding to external validation while documenting the remaining implementation difference. In particular, the paper describes a 100,000-entry timestamp gallery, whereas the released \texttt{cvt.npy} used by the notebook contains approximately 16,000 entries.
+
+\section*{Next steps}
+
+\begin{enumerate}
+  \item Prepare an auditable CCT20 manifest containing image path, capture time, camera location, sequence ID, frame number, split, and animal/empty label.
+  \item Run the same frozen checkpoint, preprocessing, and released time gallery on CCT20 without training or fine-tuning.
+  \item Report zero-shot ToY error, ToD error, and TPS, including results by camera, month/hour, day/night, and animal/empty status.
+  \item Evaluate burst stability by comparing predictions across near-simultaneous frames sharing the same \texttt{seq\_id}. Large changes would indicate sensitivity to foreground motion or short-term image changes rather than stable environmental time cues.
+  \item After the clean CCT baseline, decide whether to proceed first with controlled pixel alterations or the direct timestamp-consistency model comparison. Codec-based analysis remains deferred.
+\end{enumerate}
+
+\vfill
+\footnotesize
+\textbf{Primary reference:}
+D. G. Shatwell, I. R. Dave, S. Swetha, and M. Shah,
+``GT-Loc: Unifying When and Where in Images Through a Joint Embedding Space,''
+\emph{ICCV}, 2025.
+\url{https://arxiv.org/abs/2507.10473}.
+
+\end{document}

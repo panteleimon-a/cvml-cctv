@@ -1,0 +1,17 @@
+.DS_Store
+.cursor/**/*.json
+
+# LaTeX build products
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.synctex.gz
+
+# Local CCT20 metadata (about 115 MB; over GitHub's file limit)
+data/*.json
+
+# Intermediate retrieval dumps
+scratch/

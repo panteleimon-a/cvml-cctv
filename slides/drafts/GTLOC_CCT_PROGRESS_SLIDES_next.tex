@@ -1,0 +1,433 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\usepackage{fontspec}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\setmainfont{Arial}
+\setsansfont{Arial}
+
+\definecolor{aiia}{HTML}{1A3A5C}
+\definecolor{muted}{HTML}{555555}
+\definecolor{rule}{HTML}{C5D4E4}
+
+\usetheme{default}
+\usecolortheme{default}
+\setbeamercolor{normal text}{fg=black,bg=white}
+\setbeamercolor{structure}{fg=aiia}
+\setbeamercolor{frametitle}{fg=aiia,bg=white}
+\setbeamercolor{title}{fg=aiia}
+\setbeamercolor{item}{fg=aiia}
+\setbeamercolor{block title}{fg=aiia,bg=white}
+\setbeamercolor{block body}{fg=black,bg=white}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{itemize item}{\textcolor{aiia}{\raisebox{0.15ex}{\scriptsize$\blacksquare$}}}
+\setbeamertemplate{itemize subitem}{\textcolor{aiia}{\raisebox{0.1ex}{\tiny$\bullet$}}}
+\setbeamertemplate{footline}{%
+  \hfill{\scriptsize\color{muted}\insertframenumber\hspace{1.2em}}\vspace{0.6em}%
+}
+\setbeamerfont{frametitle}{size=\large,series=\bfseries}
+\setbeamerfont{title}{size=\LARGE,series=\bfseries}
+\setbeamersize{text margin left=1.1cm,text margin right=1.1cm}
+\setlength{\parskip}{0.25em}
+
+\title{GT-Loc External Validation on CCT20}
+\subtitle{Research Progress Report}
+\author{Panteleimon Angelidis}
+\institute{National Technical University of Athens\\
+School of Electrical \& Computer Engineering}
+\date{October 2026}
+
+\begin{document}
+
+%---------------------------------------------------------------------
+\begin{frame}[plain]
+\vspace{1.6cm}
+\begin{center}
+{\color{aiia}\LARGE\bfseries GT-Loc External Validation on CCT20}\\[0.55em]
+{\large Research Progress Report}\\[1.4em]
+{\color{muted}Panteleimon Angelidis}\\[0.25em]
+{\footnotesize\color{muted}National Technical University of Athens\\
+School of Electrical \& Computer Engineering}\\[1.2em]
+{\footnotesize\color{muted}October 2026}
+\end{center}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Outline}
+\begin{itemize}
+  \item Agreed scope and comparison context
+  \item Spatio-temporal inconsistency learning
+  \item GT-Loc reimplementation (time-only inference)
+  \item SkyFinder reproduction baseline
+  \item CCT20 burst-stability evaluation
+  \item Planned next experiments
+  \item Method roadmap
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}[plain]
+\begin{center}
+\vspace{2.4cm}
+{\color{aiia}\Huge\bfseries Agreed Scope}
+\end{center}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Agreed actions (summer meeting)}
+\begin{itemize}
+  \item Use \textbf{GT-Loc} as the immediate benchmark for image-to-time prediction
+  \item Reimplement and externally validate it within our time-of-capture scope
+  \item Restrict inference to the \textbf{image / time} pathway (no GPS retrieval in the present baseline)
+  \item Leave \textbf{codec / bitstream} analysis for later work
+  \item Use Caltech Camera Traps (CCT20) as the external surveillance-style domain
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Comparison context}
+\footnotesize
+\renewcommand{\arraystretch}{1.22}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.9cm}
+                >{\raggedright\arraybackslash}p{5.85cm}
+                >{\raggedright\arraybackslash}p{3.35cm}
+                >{\raggedright\arraybackslash}p{1.75cm}@{}}
+\toprule
+\textbf{Method} & \textbf{Problem solved} & \textbf{Input $\rightarrow$ output} & \textbf{Venue} \\
+\midrule
+GT-Loc &
+When and where was this still captured? Time and place are predicted, not checked for consistency. &
+$1$ RGB $\rightarrow$ hour, month, GPS &
+ICCV 2025 \\
+Padilha et al. &
+Are the image, the claimed time, and the location mutually consistent? &
+RGB + time + GPS $\rightarrow$ consistent / manipulated &
+IEEE TIFS \\
+Bitstream CCTV &
+Does the encoded video contain insertion, deletion, duplication, or permutation? &
+$G\times 27$ GOP features $\rightarrow$ forgery class &
+CVCS 2022 \\
+VideoFACT &
+Is this frame falsified, and where is the manipulated region? No timestamp or codec. &
+$RGB\times T$ $\rightarrow$ label + $128\times128$ mask &
+WACV 2024 \\
+\bottomrule
+\end{tabular}
+\vspace{0.6em}
+\normalsize
+\parbox{\textwidth}{\raggedright None of these is an environment-consistent CCTV verifier.}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}[plain]
+\begin{center}
+\vspace{2.4cm}
+{\color{aiia}\Huge\bfseries GT-Loc Reimplementation}
+\end{center}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Full GT-Loc vs.\ what we ran}
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Full GT-Loc}
+\begin{itemize}
+  \item Image encoder: CLIP ViT-L/14 + MLP
+  \item Time encoder: cyclic month--hour + RFF/MLP
+  \item Location encoder: GPS + RFF/MLP
+  \item Shared $512$-d retrieval space
+  \item Predicts \textbf{when and where}
+\end{itemize}
+\end{column}
+\begin{column}{0.50\textwidth}
+\textbf{Our Phase-1 setup}
+\begin{itemize}
+  \item Frozen CLIP backbone and time-encoder only (no GPS)
+\end{itemize}
+\vspace{0.15em}
+\IfFileExists{../figures/gtloc_phase1_setup.png}{\includegraphics[width=\linewidth]{../figures/gtloc_phase1_setup.png}}{\fbox{\parbox{0.92\linewidth}{\centering\footnotesize Phase-1 setup diagram}}}
+\end{column}
+\end{columns}
+\vspace{0.7em}
+{\footnotesize\color{muted}
+Not a newly trained time-only model: the image representation still inherits joint geo-temporal training.}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Inference pipeline}
+\begin{enumerate}
+  \item Load candidate timestamps from \texttt{cvt.npy}:
+        \[
+        D_i = (\mathrm{month},\mathrm{day},\mathrm{hour},\mathrm{minute},\mathrm{second})
+        \]
+  \item Inside \texttt{TimeEncoder}: $D_i \rightarrow D'_i=(\theta_i,\phi_i) \rightarrow T_i$
+  \item Encode image $I$ with CLIP + GT-Loc projection $\rightarrow V$
+  \item Retrieve $\hat{t} = \arg\max_i \cos(V,T_i)$
+  \item Evaluate with circular ToY / ToD error and TPS
+\end{enumerate}
+\vspace{0.4em}
+{\footnotesize\color{muted}
+\texttt{cvt.npy} is a timestamp gallery, not SkyFinder training labels. Gallery size in the released file is $\sim$16k rows (paper mentions 100k).}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{SkyFinder reproduction}
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Metric} & \textbf{Published} & \textbf{Reproduced} & \textbf{$\Delta$} \\
+\midrule
+Images & --- & 6{,}052 & --- \\
+ToY MAE (months) & 1.40 & 1.49 & $+0.09$ \\
+ToD MAE (hours) & 2.72 & 2.67 & $-0.05$ \\
+TPS (\%) & 77.00 & 76.40 & $-0.60$ pp \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{0.8em}
+\begin{itemize}
+  \item Official TenCrop evaluation protocol
+  \item Reproduction is close enough to treat the checkpoint pipeline as a usable baseline
+  \item Documented deviation: released time gallery size vs.\ paper description
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}[plain]
+\begin{center}
+\vspace{2.4cm}
+{\color{aiia}\Huge\bfseries CCT20 Burst Stability}
+\end{center}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{CCT20 evaluation set}
+\begin{itemize}
+  \item Official CCT20 archive: \textbf{57{,}864} images (20 cameras; max side 1024)
+  \item Canonical 1-second bursts: frames $1$--$2$--$3$, both gaps $=1.0$\,s
+  \item Retained: \textbf{15{,}976} triplets $\rightarrow$ \textbf{47{,}928} frames across \textbf{18} locations
+  \item No frames dropped from eligible complete triplets
+\end{itemize}
+\vspace{0.6em}
+Primary quantity:
+\[
+d_{\mathrm{burst}}
+=
+\sqrt{
+\left(\frac{d_H}{12}\right)^2
++
+\left(\frac{d_M}{6}\right)^2
+}
+\]
+with circular hour distance $d_H$ and circular month distance $d_M$.
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Example: canonical 1\,s burst}
+\begin{center}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{@{}ccc@{}}
+\IfFileExists{../figures/burst_example/f1.jpg}{\includegraphics[width=0.30\textwidth]{../figures/burst_example/f1.jpg}}{\fbox{\parbox{0.28\textwidth}{\centering\scriptsize $f_1$}}} &
+\IfFileExists{../figures/burst_example/f2.jpg}{\includegraphics[width=0.30\textwidth]{../figures/burst_example/f2.jpg}}{\fbox{\parbox{0.28\textwidth}{\centering\scriptsize $f_2$}}} &
+\IfFileExists{../figures/burst_example/f3.jpg}{\includegraphics[width=0.30\textwidth]{../figures/burst_example/f3.jpg}}{\fbox{\parbox{0.28\textwidth}{\centering\scriptsize $f_3$}}} \\
+{\scriptsize $f_1$ \quad M\,1/3} &
+{\scriptsize $f_2$ \quad M\,2/3} &
+{\scriptsize $f_3$ \quad M\,3/3} \\
+{\scriptsize 1:42:37\,AM} &
+{\scriptsize 1:42:38\,AM} &
+{\scriptsize 1:42:39\,AM} \\
+\end{tabular}
+\end{center}
+\vspace{0.35em}
+\begin{itemize}
+  \item Same fixed camera, night IR, animal in motion across three frames
+  \item Capture timestamps differ by exactly $1$\,s between adjacent frames
+  \item Physical time is effectively unchanged; GT-Loc should return nearly identical $\hat{t}$
+  \item Experiment: measure prediction drift $d(f_1\!\rightarrow\!f_2)$ and $d(f_2\!\rightarrow\!f_3)$
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Burst transition results}
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{\textbf{$f_1\!\rightarrow\!f_2$}}
+& \multicolumn{2}{c}{\textbf{$f_2\!\rightarrow\!f_3$}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+& median & IQR & median & IQR \\
+\midrule
+Hour (h)  & 0.16 & 0.51 & 0.13 & 0.43 \\
+Month     & 0.19 & 0.58 & 0.16 & 0.48 \\
+Burst $d_{\mathrm{burst}}$ & 0.04 & 0.11 & 0.03 & 0.10 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{0.7em}
+\normalsize
+\begin{itemize}
+  \item Report \textbf{both} transitions; aggregates do not match at two-decimal rounding
+  \item Second gap is tighter on every marginal summary
+  \item Within-triplet median$(d_{12}-d_{23})=0$ for hour, month, and burst
+  \item About 45--48\% of sequences have a larger first gap $\Rightarrow$ no one-sided jump pattern
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Reading of the burst result}
+\begin{itemize}
+  \item Near-simultaneous frames should yield nearly identical time predictions if the model relies on stable environmental cues
+  \item Observed non-zero drift shows sensitivity to short-term visual change
+  \item Current result does \textbf{not} by itself prove foreground-object causality
+  \item Current result does \textbf{not} equal a timestamp-forgery detector
+\end{itemize}
+\vspace{0.5em}
+{\footnotesize\color{muted}
+Per-sequence distances archived under\\
+\texttt{Colab Notebooks/CCTV/datasets/cct20/gtloc\_f12/transition\_distances.csv}}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Spatio-Temporal Inconsistency Learning}
+\textbf{Problem.} An environment-consistent framework that outputs temporally aware time predictions, is not diffused by motion noise, and can verify CCTV video.
+\vspace{0.4em}
+
+{\footnotesize\color{muted}
+Ground from the burst result: near-simultaneous frames should agree when the cue is the stable environment. The observed drift shows sensitivity to short-term visual change. It does not prove foreground causality, and it is not a timestamp-forgery detector.}
+\vspace{0.7em}
+
+\begin{columns}[T]
+\begin{column}{0.32\textwidth}
+{\color{aiia}\bfseries 1. Pixel level}\\[0.2em]
+{\scriptsize\color{aiia}\bfseries NOW}\\[0.25em]
+Beat GT-Loc's limitations and its time-prediction performance. This is the model under test.
+\end{column}
+\begin{column}{0.32\textwidth}
+{\color{aiia}\bfseries 2. Codec fusion}\\[0.2em]
+{\scriptsize\color{muted}\bfseries NEXT}\\[0.25em]
+A codec model, fused with the pixel-level model.
+\end{column}
+\begin{column}{0.32\textwidth}
+{\color{aiia}\bfseries 3. Splice localization}\\[0.2em]
+{\scriptsize\color{muted}\bfseries NEXT}\\[0.25em]
+Detect a splice and localize the tampered pixels.
+\end{column}
+\end{columns}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}[plain]
+\begin{center}
+\vspace{2.4cm}
+{\color{aiia}\Huge\bfseries Next Steps}
+\end{center}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Next experiments on the same triplet set}
+\small\setlength{\parskip}{0pt}
+\textbf{A --- False conflict rate}
+\begin{itemize}\setlength{\itemsep}{0.04em}
+  \item \textbf{Question:} On authentic 1\,s pairs, how often does a thresholded GT-Loc consistency check false-alarm?
+  \item \textbf{Output:} an operational rate, e.g.\ $\mathrm{FCR}_{0.5\mathrm{h}}=18.2\%$, $\mathrm{FCR}_{1\mathrm{h}}=6.4\%$
+  \item \textbf{Limit:} black box --- how often the baseline fails, not why
+\end{itemize}
+\vspace{0.12em}
+\textbf{B --- Empty vs.\ animal}
+\begin{itemize}\setlength{\itemsep}{0.04em}
+  \item \textbf{Question:} Is the jitter driven by animal motion, or just as large when the frame is empty?
+  \item \textbf{How:} median and upper tail of $d_{\mathrm{burst}}$, empty bursts versus animal bursts
+  \item Tests whether subject presence associates with higher temporal variance
+\end{itemize}
+\vspace{0.12em}
+\textbf{C --- Latent cosine vs.\ gallery hop}
+\begin{itemize}\setlength{\itemsep}{0.04em}
+  \item Retrieval, not regression: $\mathbf{z}\in\mathbb{R}^{512}$ (from the 768-d [CLS]) against 16{,}656 stamps
+  \item $\Delta t_{\mathrm{avg}}\approx 365.25\times 24/16{,}656\approx 31.6\,\mathrm{min}$ ($\approx 0.53\,\mathrm{h}$), so a $\sim 0.5\,\mathrm{h}$ gap is ambiguous
+  \item $d_{\cos}>0.05$: backbone moved; \ $d_{\cos}<10^{-4}$: neighboring stamp flipped
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Experiment C: ruler vs.\ multiple choice}
+\small\setlength{\parskip}{0.08em}
+\textbf{Retrieval, not a ruler.}
+Regression emits a number (e.g.\ $14.321$\,h). GT-Loc picks the nearest of 16{,}656 stamps from $\mathbf{z}\in\mathbb{R}^{512}$, projected from the 768-d [CLS].
+\vspace{0.15em}
+
+\textbf{Why $\sim 0.5$\,h is ambiguous.}
+$365.25\times 24=8{,}766$\,h across those stamps gives
+$\Delta t_{\mathrm{avg}}\approx 0.526$\,h $\approx 31.6$\,min.
+The gallery cannot land between neighbors, so a 1\,s pair that jumps $14{:}00\rightarrow 14{:}32$ is either a real feature change or a boundary hop.
+\vspace{0.15em}
+
+\textbf{Read $\mathbf{z}$ before the lookup.}
+\[
+d_{\cos}(\mathbf{z}_1,\mathbf{z}_2)
+=1-\frac{\mathbf{z}_1\cdot\mathbf{z}_2}{\lVert\mathbf{z}_1\rVert_2\,\lVert\mathbf{z}_2\rVert_2}
+\]
+\vspace{-0.7em}
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{@{}p{0.34\textwidth}p{0.28\textwidth}p{0.30\textwidth}@{}}
+\toprule
+\textbf{Observation} & \textbf{Cause} & \textbf{Verdict} \\
+\midrule
+$\sim 0.5$\,h, $d_{\cos}<10^{-4}$ & Gallery hop & Backbone stable; grid artifact \\
+$\ge 0.5$\,h, $d_{\cos}>0.05$ & Feature shift & Backbone moved (motion, exposure, vegetation) \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{-0.15em}
+{\footnotesize\color{muted}
+$d_{\cos}=0$ is identical; $d_{\cos}=1$ is orthogonal.
+This separates a discrete lookup failure from an encoder distracted by harmless motion.}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Method roadmap}
+\begin{enumerate}
+  \item \textbf{Fixed-view environmental prior}\\
+        Authentic near-simultaneous frames should satisfy $\Delta\hat{t}\approx 0$
+  \item \textbf{Motion-robust comparison}\\
+        Relevance / matrix-attention over fixed-view motion, before heavy generative cleanup
+  \item \textbf{Illumination / shadow prior (open)}\\
+        Optional shadow-diffusion component for lighting change; placement relative to attention remains a design choice
+\end{enumerate}
+\vspace{0.5em}
+Codec / bitstream analysis remains deferred, consistent with the agreed scope.
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}{Summary}
+\begin{itemize}
+  \item GT-Loc time pathway reimplemented and reproduced on SkyFinder
+  \item Full CCT20 downloaded and filtered to 15{,}976 canonical 1\,s triplets
+  \item Burst analysis shows non-zero, asymmetric transition statistics; both gaps must be reported
+  \item Next: FCR and/or empty--animal comparison, then fixed-view attention design
+\end{itemize}
+\end{frame}
+
+%---------------------------------------------------------------------
+\begin{frame}[plain]
+\begin{center}
+\vspace{2.2cm}
+{\color{aiia}\Huge\bfseries Q \& A}\\[1.0em]
+{\large Thank you}\\[1.4em]
+{\footnotesize\color{muted}
+Primary reference:\\
+Shatwell et al., GT-Loc, ICCV 2025.\\
+\url{https://arxiv.org/abs/2507.10473}}
+\end{center}
+\end{frame}
+
+\end{document}
