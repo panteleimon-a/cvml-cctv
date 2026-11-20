@@ -191,6 +191,39 @@ def test_find_resume_dirs():
     assert f(exclude=cur) == ['cct20_phase2_20261120_1351', 'cct20_phase2_20261119_0900']
 
 
+def test_load_cache_sources_memory_and_rules():
+    import json as _json, tracemalloc
+    g = {'Path': Path, 'json': _json}
+    exec(cell('===== 3. PURE'), g)
+    fields = ['z', 'top1_idx', 'top1_score', 'top2_idx', 'top2_score', 'ir_score']
+    root = Path(tempfile.mkdtemp()) / 'cct20_phase2_20261120_1351'
+    (root / 'cache_shards').mkdir(parents=True)
+    rng = np.random.default_rng(0)
+    n = 2048
+
+    def shard(k, ids, meta=None):
+        extra = {} if meta is None else {'meta': np.array(_json.dumps(meta))}
+        np.savez(root / 'cache_shards' / f'shard_{k:05d}.npz', image_id=np.array(ids),
+                 z=rng.normal(size=(len(ids), 512)).astype(np.float32), top1_idx=np.arange(len(ids)),
+                 top1_score=np.ones(len(ids)), top2_idx=np.arange(len(ids)), top2_score=np.ones(len(ids)),
+                 ir_score=np.ones(len(ids)), **extra)
+
+    shard(0, [f'a{i}' for i in range(n)])                                         # Colab shard, no meta
+    shard(1, [f'b{i}' for i in range(n)], {'tencrop': True, 'ckpt_sha256': 'S'})
+    shard(2, ['c0'], {'tencrop': False, 'ckpt_sha256': 'S'})                     # other settings: skipped
+    (root / 'cache_shards' / 'shard_00003.npz').write_bytes(b'cut short')         # truncated: skipped
+    cache = {}
+    tracemalloc.start()
+    used = g['load_cache_sources'](root, cache, fields, True, 'S')
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert len(cache) == 2 * n and 'c0' not in cache
+    assert [p.name for p in used] == ['shard_00000.npz', 'shard_00001.npz']
+    assert cache['a5']['z'].shape == (512,)
+    # two shards of 2048 x 512 float32 are 8 MB; the per-frame re-read would need gigabytes
+    assert peak < 64 * 2**20, peak
+
+
 def test_classifiers_and_rates():
     g = pure()
     cls = g['classify_jump']([1, 1, 1, 0, 1], [0.5, 2.0, 0.5, 0, 0.01], [5e-5, 0.2, 0.01, 0, 5e-5], step_h=0.526)

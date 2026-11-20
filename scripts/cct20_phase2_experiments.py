@@ -378,6 +378,54 @@ def find_resume_dirs(results_root, experiment, exclude=None):
     return picked
 
 
+def load_cache_sources(path, cache, fields, tencrop, ckpt_sha256):
+    """Add frames from a results folder (its frame_cache.npz, else its cache_shards/shard_*.npz) or from one .npz
+    file to `cache` (image_id -> {field: value}). Frames already in `cache` are kept (newer folders are loaded first
+    and win). Shards without `meta` (the first Colab run) are accepted; shards whose meta has other settings and
+    unreadable shards (cut short when a runtime died) are skipped, so their frames are encoded again.
+    Returns the files that added at least one frame (what carry_forward_shards copies)."""
+    path = Path(path)
+    used = []
+    if path.is_dir() and not (path / 'frame_cache.npz').exists():
+        shards = sorted((path / 'cache_shards').glob('shard_*.npz'))   # resume an interrupted run
+        for sp in shards:
+            try:
+                d = np.load(sp, allow_pickle=False)
+                ids = d['image_id'].astype(str)
+                arr = {k: d[k] for k in fields}          # read each array once
+                meta = json.loads(str(d['meta'])) if 'meta' in d.files else None
+            except Exception as exc:
+                print(f'Skipping unreadable {sp}: {type(exc).__name__}')
+                continue
+            if meta is not None and (meta.get('tencrop') != tencrop or meta.get('ckpt_sha256') != ckpt_sha256):
+                print(f'Skipping {sp.name}: settings differ {meta}')
+                continue
+            n0 = len(cache)
+            for i, iid in enumerate(ids):
+                if iid not in cache:
+                    cache[iid] = {k: arr[k][i] for k in fields}
+            if len(cache) > n0:
+                used.append(sp)
+        print(f'Cache now holds {len(cache):,} frames after {len(shards)} shards in {path}')
+        return used
+    if path.is_dir():
+        path = path / 'frame_cache.npz'
+    d = np.load(path, allow_pickle=False)
+    meta = json.loads(str(d['meta'])) if 'meta' in d.files else {}
+    if meta and (meta.get('tencrop') != tencrop or meta.get('ckpt_sha256') != ckpt_sha256):
+        print('WARNING: PREV_CACHE settings differ:', meta)
+    ids = d['image_id'].astype(str)
+    arr = {k: d[k] for k in fields}
+    n0 = len(cache)
+    for i, iid in enumerate(ids):
+        if iid not in cache:
+            cache[iid] = {k: arr[k][i] for k in fields}
+    if len(cache) > n0:
+        used.append(path)
+    print(f'Cache now holds {len(cache):,} frames after {path}')
+    return used
+
+
 def list_dir_retry(path, retries=6, backoff=5.0, sleep=time.sleep):
     """One os.scandir listing -> {file name: full path}, with exponential backoff on OSError/TimeoutError.
     Drive FUSE can raise 'A Google Drive timeout has occurred' on huge flat folders. os.walk would silently swallow
@@ -726,36 +774,9 @@ CACHE_FIELDS = ['z', 'top1_idx', 'top1_score', 'top2_idx', 'top2_score', 'ir_sco
 cache = {}   # image_id -> dict
 
 def load_cache_file(path):
-    path = Path(path)
-    if path.is_dir() and not (path / 'frame_cache.npz').exists():
-        shards = sorted((path / 'cache_shards').glob('shard_*.npz'))   # resume an interrupted run
-        for sp in shards:
-            try:
-                d = np.load(sp, allow_pickle=False)
-                d['image_id']
-            except Exception as exc:   # a shard cut short when the runtime died: its frames are encoded again
-                print(f'Skipping unreadable {sp}: {type(exc).__name__}')
-                continue
-            if 'meta' in d.files:
-                m = json.loads(str(d['meta']))
-                if m.get('tencrop') != TENCROP or m.get('ckpt_sha256') != CKPT_SHA256:
-                    print(f'Skipping {sp.name}: settings differ {m}')
-                    continue
-            for i, iid in enumerate(d['image_id'].astype(str)):
-                if iid not in cache:   # newer folders are loaded first and win
-                    cache[iid] = {k: d[k][i] for k in CACHE_FIELDS}
-        print(f'Cache now holds {len(cache):,} frames after {len(shards)} shards in {path}')
-        return
-    if path.is_dir():
-        path = path / 'frame_cache.npz'
-    d = np.load(path, allow_pickle=False)
-    meta = json.loads(str(d['meta'])) if 'meta' in d.files else {}
-    if meta and (meta.get('tencrop') != TENCROP or meta.get('ckpt_sha256') != CKPT_SHA256):
-        print('WARNING: PREV_CACHE settings differ:', meta)
-    for i, iid in enumerate(d['image_id'].astype(str)):
-        if iid not in cache:
-            cache[iid] = {k: d[k][i] for k in CACHE_FIELDS}
-    print(f'Cache now holds {len(cache):,} frames after {path}')
+    # Reads each shard array once. Indexing the NpzFile per frame (d[k][i]) re-read and kept a full copy of the
+    # array for every frame, which used all Colab RAM when resuming 9 shards.
+    load_cache_sources(path, cache, CACHE_FIELDS, TENCROP, CKPT_SHA256)
 
 if PREV_CACHE == 'auto':
     PREV_CACHE = [str(d) for d in find_resume_dirs(RESULTS_DIR.parent, EXPERIMENT, exclude=RESULTS_DIR)]
