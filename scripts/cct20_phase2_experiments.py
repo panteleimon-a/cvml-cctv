@@ -718,11 +718,22 @@ if len(todo) and IMAGE_SOURCE == 'drive' and COPY_TO_LOCAL:
     def _cp(src, retries=5):
         dst = LOCAL_IMG_DIR / os.path.basename(src)
         for k in range(retries):
+            src_size = None
             try:
-                if not dst.exists():
-                    shutil.copyfile(src, dst)   # destination is local /content, never Drive
+                src_size = os.path.getsize(src)
+                # copyfile can leave a short dest when Drive times out; only a full-size file counts.
+                if dst.exists() and dst.stat().st_size == src_size:
+                    return str(dst)
+                shutil.copyfile(src, dst)   # destination is local /content, never Drive
+                if dst.stat().st_size != src_size:
+                    raise OSError(f'truncated copy of {src}')
                 return str(dst)
             except (OSError, TimeoutError) as exc:
+                try:
+                    if src_size is not None and dst.exists() and dst.stat().st_size != src_size:
+                        dst.unlink()
+                except OSError:
+                    pass
                 if k == retries - 1:
                     raise RuntimeError(f'copy failed after {retries} tries: {src}: {exc}')
                 time.sleep(2 * 2 ** k)
