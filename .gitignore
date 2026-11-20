@@ -15,3 +15,7 @@ data/*.json
 
 # Intermediate retrieval dumps
 scratch/
+
+# Python bytecode
+__pycache__/
+*.pyc

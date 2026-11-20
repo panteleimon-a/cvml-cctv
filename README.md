@@ -1,6 +1,8 @@
 ## Layout
 
-- `notebooks/` — GT-Loc run code. Phase 1 reproduces the released checkpoint on SkyFinder.
+- `notebooks/` — GT-Loc Colab notebooks. Phase 1 reproduces the released checkpoint on SkyFinder, and Phase 2 runs the CCT20 burst experiments. See `notebooks/README.md`.
+- `scripts/` — the Phase 2 code as a plain `.py` file.
+- `tests/` — offline tests for the Phase 2 functions.
 - `docs/` — study plan, problem positioning, and the progress report.
 - `slides/` — progress slides. Earlier drafts are in `slides/drafts/`.
 - `figures/` — figures included by the slides.
