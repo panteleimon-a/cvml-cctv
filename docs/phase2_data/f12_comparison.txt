@@ -1,0 +1,9 @@
+recomputed f1->f2 median d_burst 0.0446
+transition_distances.csv location: median 46.0000
+transition_distances.csv h12: median 0.1556
+transition_distances.csv m12: median 0.1935
+transition_distances.csv b12: median 0.0445
+transition_distances.csv h23: median 0.1333
+transition_distances.csv m23: median 0.1613
+transition_distances.csv b23: median 0.0349
+seq_id overlap with transition_distances.csv: 15,976/15,976

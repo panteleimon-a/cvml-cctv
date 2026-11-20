@@ -1,0 +1,20 @@
+{
+  "BASE": "/content/drive/MyDrive/Colab Notebooks/CCTV",
+  "TENCROP": true,
+  "USE_FP16": true,
+  "BATCH_FRAMES": 24,
+  "PREV_CACHE": [
+    "/content/drive/MyDrive/Colab Notebooks/CCTV/results/cct20_phase2_20261120_1351"
+  ],
+  "FCR_THRESHOLDS_H": [
+    0.5,
+    1.0
+  ],
+  "DCOS_HOP_MAX": 0.0001,
+  "DCOS_SHIFT_MIN": 0.05,
+  "HOP_STEP": 0.5262968299711815,
+  "HOP_TOL_FRAC": 0.5,
+  "IR_THRESH": 2.0,
+  "REPO_COMMIT": "6e7d9d2745d15a101b3b4dd05151807af77831ea",
+  "CKPT_SHA256": "387a9bc7999ebebe2748df532b93f9beb2365311aefefb63d5957b553a9a4af7"
+}
