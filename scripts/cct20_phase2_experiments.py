@@ -11,8 +11,13 @@
 # **Run order:** run every cell from top to bottom (*Runtime → Run all*).
 # 1. Config. Creates a new results folder `BASE/results/cct20_phase2_<YYYYMMDD_HHMM>/` and never overwrites anything.
 # 2. Setup: installs packages, mounts Drive and checks the GPU.
-# 3. Pure functions: circular distances, triplet filter, classifiers.
+# 3. Pure functions: circular distances, triplet filter, label rule, missing-frame guard, classifiers.
+# 3b. Data source. With `IMAGE_SOURCE='lila'` (the default), downloads the official CCT20 small-images archive
+#     (`eccv_18_all_images_sm.tar.gz`, 6,492,615,601 bytes) from LILA's public bucket to `/content` and extracts it
+#     locally. It is skipped if already extracted in this session. The annotations come from Drive, or from LILA if
+#     the Drive JSONs are missing. `IMAGE_SOURCE='drive'` lists the Drive folder once, with retries.
 # 4. CCT20 annotations → canonical 1 s triplets. Checks against 15,976 triplets / 47,928 frames / 18 locations.
+#    Stops before inference if more than 1% of the triplet frames have no image file.
 # 5. GT-Loc encoders + gallery: the same loading as Phase 1, plus a gallery-resolution report.
 # 6. Read-only inspection of `gtloc_f12/preds.npz` and `transition_distances.csv`.
 # 7. Per-frame inference and cache: 512-d z, top-2 retrieval, predicted time, IR score. It resumes from shards.
@@ -21,7 +26,7 @@
 # 9. **A**: false conflict rate. 10. **C**: latent cosine vs gallery hop. 11. **B**: empty vs animal bursts.
 # 12. Final summary, ending with `RUN FINISHED`.
 #
-# **Expected time on a T4:** copying the frames to local disk takes about 10–25 min. TenCrop fp16 inference on 47,928
+# **Expected time on a T4:** the LILA download (6.5 GB) and extraction take about 5–15 min. TenCrop fp16 inference on 47,928
 # frames takes about 30–50 min. A rerun with `PREV_CACHE` set takes only a few minutes.
 #
 # **Outputs** (all in the new results folder):
@@ -66,7 +71,19 @@ USE_FP16 = True           # autocast fp16 for the image encoder on T4; retrieval
 BATCH_FRAMES = 24         # frames per batch (x10 crops with TenCrop = 240 crops); lower to 12 on OOM
 NUM_WORKERS = 2           # Colab standard has 2 vCPUs
 SHARD_SIZE = 2048         # frames per resume shard
-COPY_TO_LOCAL = True      # copy the needed frames from Drive to /content/cct20_local (much faster reads)
+# Image source: 'lila' = download + extract the official CCT20 archive to local disk (recommended);
+#               'drive' = read eccv_18_all_images_sm/ from Drive (slow, Drive FUSE can time out on the flat folder)
+IMAGE_SOURCE = 'lila'
+LILA_IMAGES_URL = 'https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_all_images_sm.tar.gz'
+LILA_IMAGES_BYTES = 6_492_615_601          # verified with HTTP HEAD (Last-Modified 2023-06-29)
+LILA_IMAGES_MD5_B64 = 'gUPBeqKhKHK2byhP8hFTHw=='   # x-goog-hash md5 from the same HEAD
+LILA_ANN_URL = 'https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_annotations.tar.gz'
+LILA_ANN_BYTES = 2_997_071
+VERIFY_MD5 = True         # ~1 min extra on Colab; set False to skip
+LOCAL_DATA_DIR = Path('/content/cct20_lila')   # local disk only, never Drive
+DELETE_TAR_AFTER_EXTRACT = True                # frees ~6.5 GB of local /content disk
+MAX_MISSING_FRAC = 0.01   # stop before inference if more than 1% of the triplet frames have no image file
+COPY_TO_LOCAL = True      # 'drive' mode only: copy needed frames to /content/cct20_local with retries
 LOCAL_IMG_DIR = Path('/content/cct20_local')
 
 # Reuse: a previous frame_cache.npz OR a previous results folder; None = compute
@@ -100,8 +117,9 @@ try:
 except ImportError:
     print('Not in Colab: make sure BASE points to a local copy.')
 
-assert CCT_ANN_DIR.exists(), f'Missing {CCT_ANN_DIR}'
-assert CCT_IMG_DIR.exists(), f'Missing {CCT_IMG_DIR}'
+assert IMAGE_SOURCE in ('lila', 'drive'), IMAGE_SOURCE
+if IMAGE_SOURCE == 'drive':
+    assert CCT_IMG_DIR.exists(), f'Missing {CCT_IMG_DIR}'
 RESULTS_DIR.parent.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=False)   # fails instead of reusing/overwriting a folder
 
@@ -124,6 +142,8 @@ print('torch', torch.__version__)
 # %%
 # ===== 3. PURE FUNCTIONS (no GPU / no Drive; unit-testable) =====
 import math
+import os
+import time
 import numpy as np
 import pandas as pd
 
@@ -153,7 +173,10 @@ def parse_datetimes(series):
         return pd.to_datetime(series, errors='coerce')
 
 def load_cct_images(ann_jsons):
-    """ann_jsons: dict split -> loaded COCO-CT dict. Returns (images_df, annotations_df, categories_df) deduped."""
+    """ann_jsons: dict split -> loaded COCO-CT dict. Returns (images_df, annotations_df, categories_df, n_raw).
+    Deterministic: images are de-duplicated by id keeping the first split in the given split order. Annotations are
+    the UNION over all split JSONs, de-duplicated by (image_id, category_id). Category ids must map to the same
+    name in every JSON; otherwise it raises instead of letting the last file win."""
     imgs, anns, cats = [], [], {}
     for split, d in ann_jsons.items():
         for im in d.get('images', []):
@@ -161,6 +184,8 @@ def load_cct_images(ann_jsons):
         for a in d.get('annotations', []):
             anns.append({'image_id': a['image_id'], 'category_id': a['category_id']})
         for c in d.get('categories', []):
+            if c['id'] in cats and cats[c['id']] != c['name']:
+                raise ValueError(f"category id {c['id']} is {cats[c['id']]!r} in one JSON and {c['name']!r} in {split}")
             cats[c['id']] = c['name']
     im = pd.DataFrame(imgs)
     n_raw = len(im)
@@ -170,18 +195,49 @@ def load_cct_images(ann_jsons):
     im = im.drop_duplicates(subset='id', keep='first').reset_index(drop=True)
     an = pd.DataFrame(anns, columns=['image_id', 'category_id'])
     an['image_id'] = an['image_id'].astype(str)
-    an = an.drop_duplicates().reset_index(drop=True)
+    an = an.drop_duplicates().sort_values(['image_id', 'category_id']).reset_index(drop=True)
     cat = pd.DataFrame(sorted(cats.items()), columns=['category_id', 'name'])
     return im, an, cat, n_raw
 
+LABEL_RULE = ("image = 'empty' iff ALL of its annotations (union over all split JSONs, de-duplicated by "
+              "(image_id, category_id)) have category 'empty'; 'animal' if it has any non-empty annotation; "
+              "'unlabeled' if it has none. Triplet = 'empty' iff all 3 frames are 'empty'; 'animal' if any frame is "
+              "'animal'; otherwise 'unlabeled' (excluded from B).")
+
 def image_labels(images_df, ann_df, cat_df):
-    """Per image: 'empty' if every annotation is category 'empty', 'animal' if any non-empty, 'unlabeled' if none."""
-    empty_ids = set(cat_df.loc[cat_df['name'].str.lower() == 'empty', 'category_id'])
+    """Per image, by LABEL_RULE. Independent of file, annotation and split order."""
+    empty_ids = set(cat_df.loc[cat_df['name'].str.strip().str.lower() == 'empty', 'category_id'])
     if not empty_ids:
         raise ValueError("No 'empty' category in annotations")
-    g = ann_df.assign(is_empty=ann_df['category_id'].isin(empty_ids)).groupby('image_id')['is_empty'].all()
-    lab = images_df['id'].map(g)
-    return np.where(lab.isna(), 'unlabeled', np.where(lab == True, 'empty', 'animal'))
+    is_empty = ann_df['category_id'].isin(empty_ids)
+    all_empty = is_empty.groupby(ann_df['image_id']).all()
+    lab = images_df['id'].astype(str).map(all_empty)          # True / False / NaN (no annotation)
+    return lab.map({True: 'empty', False: 'animal'}).fillna('unlabeled').to_numpy(dtype=object)
+
+def label_diagnostics(ann_df, cat_df):
+    """Counts that explain the labels: images with >1 annotation and images mixing 'empty' with an animal."""
+    empty_ids = set(cat_df.loc[cat_df['name'].str.strip().str.lower() == 'empty', 'category_id'])
+    g = ann_df.assign(e=ann_df['category_id'].isin(empty_ids)).groupby('image_id')['e']
+    n = g.size(); a = g.all(); o = g.any()
+    return {'annotated_images': int(len(n)), 'multi_annotation_images': int((n > 1).sum()),
+            'mixed_empty_and_animal': int((o & ~a).sum())}
+
+def check_missing_frames(n_missing, n_total, examples, max_frac=0.01):
+    """Fail fast (before inference) when too many triplet frames have no image file."""
+    if n_total == 0:
+        raise RuntimeError('No triplet frames were built. Check the annotation JSONs and the triplet filter.')
+    frac = n_missing / n_total
+    if frac > max_frac:
+        raise RuntimeError(
+            f'{n_missing:,} of {n_total:,} triplet frames ({100*frac:.2f}%) have no image file '
+            f'(limit {100*max_frac:.1f}%). Examples: {list(examples)[:5]}. The image folder is incomplete or '
+            f'could not be listed; use IMAGE_SOURCE="lila" or fix the folder.')
+    return frac
+
+def require_frames(frames_df):
+    if frames_df is None or len(frames_df) == 0:
+        raise RuntimeError('No frames to process: the triplet table is empty. Re-run cell 4 and check its counts '
+                           '(triplets, missing image files) before inference.')
 
 def build_triplets(images_df, require_seq_len='ge3', gap_s=1.0, frame_base=None):
     """Canonical frames 1-2-3 of each sequence with both gaps == gap_s seconds.
@@ -286,6 +342,22 @@ def tail_stats(x):
     q = np.percentile(x, [25, 50, 75, 90, 95, 99])
     return dict(n=len(x), median=q[1], iqr=q[2] - q[0], p90=q[3], p95=q[4], p99=q[5], mean=x.mean())
 
+def list_dir_retry(path, retries=6, backoff=5.0, sleep=time.sleep):
+    """One os.scandir listing -> {file name: full path}, with exponential backoff on OSError/TimeoutError.
+    Drive FUSE can raise 'A Google Drive timeout has occurred' on huge flat folders. os.walk would silently swallow
+    that error and return nothing, which is how the earlier run got an empty listing."""
+    last = None
+    for k in range(retries):
+        try:
+            with os.scandir(path) as it:
+                return {e.name: e.path for e in it if e.is_file()}
+        except (OSError, TimeoutError) as exc:
+            last = exc
+            wait = backoff * (2 ** k)
+            print(f'listing {path} failed ({exc}); retry {k+1}/{retries} in {wait:.0f}s')
+            sleep(wait)
+    raise RuntimeError(f'Could not list {path} after {retries} attempts: {last}')
+
 def ir_score_from_pil(img, size=64):
     """Mean absolute channel difference (0-255) on a thumbnail; ~0 for grayscale/IR frames."""
     a = np.asarray(img.convert('RGB').resize((size, size)), np.float32)
@@ -295,15 +367,115 @@ def ir_score_from_pil(img, size=64):
 print('Pure functions ready.')
 
 # %%
+# ===== 3b. DATA SOURCE: annotations + images (local disk) =====
+import base64, hashlib, shutil, tarfile, urllib.request
+
+def http_size(url):
+    req = urllib.request.Request(url, method='HEAD')
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return int(r.headers['Content-Length'])
+
+def download(url, dst, expected_bytes):
+    """Resumable download to local disk (aria2c if present, else wget -c), then a size check."""
+    dst = Path(dst); dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        live = http_size(url)
+        if live != expected_bytes:
+            print(f'NOTE: server size {live:,} differs from the recorded {expected_bytes:,}; using the server size.')
+            expected_bytes = live
+    except Exception as exc:
+        print('HEAD failed, using the recorded size:', exc)
+    if dst.exists() and dst.stat().st_size == expected_bytes:
+        print('Already downloaded:', dst); return dst
+    t0 = time.time()
+    if shutil.which('aria2c'):
+        cmd = ['aria2c', '-c', '-x', '16', '-s', '16', '--summary-interval=30', '--console-log-level=warn',
+               '-d', str(dst.parent), '-o', dst.name, url]
+    else:
+        cmd = ['wget', '-c', '--tries=20', '--retry-connrefused', '--waitretry=10', '--progress=dot:giga',
+               '-O', str(dst), url]
+    for attempt in range(3):
+        if subprocess.run(cmd).returncode == 0 and dst.stat().st_size == expected_bytes:
+            break
+        print(f'download attempt {attempt+1} incomplete ({dst.stat().st_size if dst.exists() else 0:,} bytes); resuming')
+    size = dst.stat().st_size
+    if size != expected_bytes:
+        raise RuntimeError(f'{dst.name}: got {size:,} bytes, expected {expected_bytes:,}')
+    print(f'Downloaded {size/2**30:.2f} GiB in {(time.time()-t0)/60:.1f} min')
+    return dst
+
+def md5_b64(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as fh:
+        for blk in iter(lambda: fh.read(16 << 20), b''):
+            h.update(blk)
+    return base64.b64encode(h.digest()).decode()
+
+def extract(tar_path, dest, prefix):
+    """Extract to local disk with progress; skip if a completion marker exists. Only members under prefix/."""
+    marker = Path(dest) / f'.{prefix}.extracted'
+    if marker.exists():
+        print('Already extracted:', Path(dest) / prefix); return Path(dest) / prefix
+    t0 = time.time(); n = 0
+    with tarfile.open(tar_path, 'r:gz') as tf:
+        for m in tf:
+            name = m.name.lstrip('./')
+            if not name.startswith(prefix + '/') and name != prefix:
+                continue
+            if m.issym() or m.islnk() or '..' in Path(name).parts:
+                continue
+            tf.extract(m, dest, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))
+            n += 1
+            if n % 5000 == 0:
+                print(f'  extracted {n:,} entries ({(time.time()-t0)/60:.1f} min)')
+    marker.write_text(str(n))
+    print(f'Extracted {n:,} entries in {(time.time()-t0)/60:.1f} min')
+    return Path(dest) / prefix
+
+# Annotations: Drive JSONs if all five are there, otherwise the LILA archive on local disk
+def find_split_jsons(folder):
+    found = {}
+    for s in ANN_SPLITS:
+        cands = sorted(Path(folder).glob(f'*{s}*.json'), key=lambda c: len(c.name)) if Path(folder).exists() else []
+        if cands:
+            found[s] = cands[0]
+    return found
+ann_files = find_split_jsons(CCT_ANN_DIR)
+if len(ann_files) < len(ANN_SPLITS):
+    print(f'Drive annotations incomplete ({sorted(ann_files)}); downloading the LILA annotation archive.')
+    tgz = download(LILA_ANN_URL, LOCAL_DATA_DIR / 'eccv_18_annotations.tar.gz', LILA_ANN_BYTES)
+    ann_files = find_split_jsons(extract(tgz, LOCAL_DATA_DIR, 'eccv_18_annotation_files'))
+assert len(ann_files) == len(ANN_SPLITS), f'missing annotation JSONs: {set(ANN_SPLITS) - set(ann_files)}'
+
+# Images
+if IMAGE_SOURCE == 'lila':
+    img_dir = LOCAL_DATA_DIR / 'eccv_18_all_images_sm'
+    if not (LOCAL_DATA_DIR / '.eccv_18_all_images_sm.extracted').exists():
+        tar = download(LILA_IMAGES_URL, LOCAL_DATA_DIR / 'eccv_18_all_images_sm.tar.gz', LILA_IMAGES_BYTES)
+        if VERIFY_MD5:
+            got = md5_b64(tar)
+            if got != LILA_IMAGES_MD5_B64:
+                raise RuntimeError(f'MD5 mismatch for {tar.name}: {got} != {LILA_IMAGES_MD5_B64}. Delete it and rerun.')
+            print('MD5 OK')
+        img_dir = extract(tar, LOCAL_DATA_DIR, 'eccv_18_all_images_sm')
+        if DELETE_TAR_AFTER_EXTRACT:
+            tar.unlink()   # local /content temp file only
+    IMAGE_DIR = img_dir
+else:
+    IMAGE_DIR = CCT_IMG_DIR
+t0 = time.time()
+avail = list_dir_retry(IMAGE_DIR)
+print(f'Image source: {IMAGE_SOURCE} -> {IMAGE_DIR}: {len(avail):,} files listed in {time.time()-t0:.0f}s')
+
+# %%
 # ===== 4. CCT20 ANNOTATIONS -> CANONICAL 1 s TRIPLETS =====
 ann = {}
 for s in ANN_SPLITS:
-    cands = sorted(CCT_ANN_DIR.glob(f'*{s}*.json'), key=lambda c: len(c.name))  # e.g. cis_val_annotations.json
-    if not cands:
-        print(f'WARNING: no JSON for split {s} in {CCT_ANN_DIR}'); continue
-    with open(cands[0]) as fh:
-        ann[s] = json.load(fh)
-    print(f'{s:11s} <- {cands[0].name}: {len(ann[s].get("images", [])):,} images')
+    with open(ann_files[s], 'rb') as fh:
+        raw_bytes = fh.read()
+    ann[s] = json.loads(raw_bytes)
+    print(f'{s:11s} <- {ann_files[s]}: {len(ann[s].get("images", [])):,} images, '
+          f'{len(ann[s].get("annotations", [])):,} annotations, md5 {hashlib.md5(raw_bytes).hexdigest()}')
 
 images_df, ann_df, cat_df, n_raw = load_cct_images(ann)
 print(f'Images: {n_raw:,} raw -> {len(images_df):,} after de-dup by id; annotations {len(ann_df):,}')
@@ -311,7 +483,10 @@ print('Image fields:', sorted(images_df.columns))
 images_df['datetime'] = parse_datetimes(images_df['datetime'])
 print('Unparsed datetimes:', int(images_df['datetime'].isna().sum()))
 images_df['label'] = image_labels(images_df, ann_df, cat_df)
-print('Image labels:', images_df['label'].value_counts().to_dict())
+print('LABEL RULE:', LABEL_RULE)
+print('Label diagnostics:', label_diagnostics(ann_df, cat_df))
+print('Image labels:', images_df['label'].value_counts().sort_index().to_dict(),
+      '(official eccv_18 JSONs give animal 53,850 / empty 4,014)')
 
 variants = {}
 for v in (['eq3', 'ge3'] if REQUIRE_SEQ_LEN == 'auto' else [REQUIRE_SEQ_LEN]):
@@ -321,17 +496,15 @@ pick = next((v for v in variants if variants[v][1]['triplets'] == EXPECTED_TRIPL
 triplets, tstats = variants[pick]
 print(f'Using variant {pick!r}')
 
-# Missing image files (one directory listing; Drive FUSE is slow per stat)
-avail = {}
-for root, _, files in os.walk(CCT_IMG_DIR):
-    for f in files:
-        avail.setdefault(f, os.path.join(root, f))
+# Missing image files: membership in the single directory listing from cell 3b (no per-file stat on Drive)
 def resolve(fn):
     return avail.get(fn) or avail.get(os.path.basename(fn))
 for j in (1, 2, 3):
     triplets[f'path{j}'] = triplets[f'file{j}'].map(resolve)
+miss_frames = pd.concat([triplets.loc[triplets[f'path{j}'].isna(), f'file{j}'] for j in (1, 2, 3)])
+frac = check_missing_frames(len(miss_frames), 3 * len(triplets), miss_frames.head(5).tolist(), MAX_MISSING_FRAC)
 missing = triplets[['path1', 'path2', 'path3']].isna().any(axis=1)
-print(f'Triplets with a missing image file: {int(missing.sum())} (dropped)')
+print(f'Missing frames: {len(miss_frames):,} ({100*frac:.2f}%); triplets dropped: {int(missing.sum()):,}')
 triplets = triplets[~missing].reset_index(drop=True)
 triplets['tlabel'] = triplet_label(triplets)
 
@@ -347,6 +520,7 @@ frames = pd.concat([
     triplets[['seq_id', 'location', f'id{j}', f'file{j}', f'path{j}', f'dt{j}', f'label{j}']]
     .set_axis(['seq_id', 'location', 'image_id', 'file_name', 'path', 'datetime', 'label'], axis=1)
     .assign(frame=j) for j in (1, 2, 3)], ignore_index=True)
+require_frames(frames)
 assert frames['image_id'].is_unique, 'an image appears in two triplets'
 triplets.drop(columns=['path1', 'path2', 'path3']).to_csv(out('triplets.csv'), index=False)
 frames.drop(columns=['path']).to_csv(out('frames.csv'), index=False)
@@ -535,16 +709,23 @@ def load_cache_file(path):
 if PREV_CACHE:
     load_cache_file(PREV_CACHE)
 
+require_frames(frames)
 todo = frames[~frames['image_id'].isin(cache)].reset_index(drop=True)
 print(f'Frames to encode: {len(todo):,} / {len(frames):,}')
 
-if len(todo) and COPY_TO_LOCAL:
+if len(todo) and IMAGE_SOURCE == 'drive' and COPY_TO_LOCAL:
     LOCAL_IMG_DIR.mkdir(parents=True, exist_ok=True)
-    def _cp(src):
+    def _cp(src, retries=5):
         dst = LOCAL_IMG_DIR / os.path.basename(src)
-        if not dst.exists():
-            shutil.copyfile(src, dst)   # destination is local /content, never Drive
-        return str(dst)
+        for k in range(retries):
+            try:
+                if not dst.exists():
+                    shutil.copyfile(src, dst)   # destination is local /content, never Drive
+                return str(dst)
+            except (OSError, TimeoutError) as exc:
+                if k == retries - 1:
+                    raise RuntimeError(f'copy failed after {retries} tries: {src}: {exc}')
+                time.sleep(2 * 2 ** k)
     t0 = time.time()
     with ThreadPoolExecutor(32) as ex:
         todo['local_path'] = list(ex.map(_cp, todo['path']))
@@ -614,7 +795,9 @@ if len(todo):
         flush(buf, k)
     print(f'Encoded {done:,} frames in {(time.time()-t0)/60:.1f} min')
 
-assert all(i in cache for i in frames['image_id']), 'some frames are missing from the cache'
+missing_cache = [i for i in frames['image_id'] if i not in cache]
+if missing_cache:
+    raise RuntimeError(f'{len(missing_cache):,} frames are missing from the cache, e.g. {missing_cache[:3]}')
 order = frames['image_id'].tolist()
 CZ = np.stack([cache[i]['z'] for i in order]).astype(np.float32)
 C1 = np.array([int(cache[i]['top1_idx']) for i in order])
