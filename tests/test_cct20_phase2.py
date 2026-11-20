@@ -165,6 +165,32 @@ def test_real_eccv18_annotations_if_available():
     assert g['build_triplets'](im, 'ge3')[1]['triplets'] == 16122
 
 
+def test_find_resume_dirs():
+    g = {'Path': Path}
+    exec(cell('===== 3. PURE'), g)
+    root = Path(tempfile.mkdtemp())
+    f = lambda **k: [d.name for d in g['find_resume_dirs'](root, 'cct20_phase2', **k)]
+    assert g['find_resume_dirs'](root / 'nope', 'cct20_phase2') == []
+
+    def mk(name, shard=False, cache=False):
+        d = root / name
+        (d / 'cache_shards').mkdir(parents=True)
+        if shard:
+            (d / 'cache_shards' / 'shard_00000.npz').write_bytes(b'x')
+        if cache:
+            (d / 'frame_cache.npz').write_bytes(b'x')
+        return d
+
+    mk('cct20_phase2_20261118_0900', cache=True)            # older than the finished cache: not needed
+    mk('cct20_phase2_20261119_0900', shard=True, cache=True)
+    mk('cct20_phase2_20261120_1351', shard=True)
+    mk('cct20_phase2_20261120_1700')                        # empty: died before inference
+    cur = mk('cct20_phase2_20261121_1000', shard=True)
+    mk('other_20261122_1000', shard=True)
+    assert f() == ['cct20_phase2_20261121_1000', 'cct20_phase2_20261120_1351', 'cct20_phase2_20261119_0900']
+    assert f(exclude=cur) == ['cct20_phase2_20261120_1351', 'cct20_phase2_20261119_0900']
+
+
 def test_classifiers_and_rates():
     g = pure()
     cls = g['classify_jump']([1, 1, 1, 0, 1], [0.5, 2.0, 0.5, 0, 0.01], [5e-5, 0.2, 0.01, 0, 5e-5], step_h=0.526)
@@ -223,7 +249,7 @@ def test_postprocessing_cells_end_to_end():
              C2=rng.integers(0, len(gal), n), S1=s1, S2=s1 - 0.01, IRS=np.where(frames.is_ir, 0.5, 20.0),
              G_HOUR=g['frac_hour'](gal[:, 2], gal[:, 3], gal[:, 4]), G_MONTH=g['frac_month'](gal[:, 0], gal[:, 1]),
              f12_td=None, HOP_STEP=0.526, tstats={}, pick='ge3', gal_res={}, REPO_COMMIT='x', CKPT_SHA256='y',
-             subprocess=subprocess, sys=sys, Path=Path)
+             subprocess=subprocess, sys=sys, Path=Path, heartbeat=lambda *a, **k: None)
     for tag in ['===== 8. PAIR', '===== 9. EXPERIMENT A', '===== 10. EXPERIMENT C',
                 '===== 11. EXPERIMENT B', '===== 12. SUMMARY']:
         exec(cell(tag), g)

@@ -20,19 +20,25 @@
 #    Stops before inference if more than 1% of the triplet frames have no image file.
 # 5. GT-Loc encoders + gallery: the same loading as Phase 1, plus a gallery-resolution report.
 # 6. Read-only inspection of `gtloc_f12/preds.npz` and `transition_distances.csv`.
-# 7. Per-frame inference and cache: 512-d z, top-2 retrieval, predicted time, IR score. It resumes from shards.
-#    It can also start from `PREV_CACHE`.
+# 7. Per-frame inference and cache: 512-d z, top-2 retrieval, predicted time, IR score. With `PREV_CACHE='auto'`
+#    (the default) it resumes from the newest earlier results folder that has a cache or cache shards, so a run that
+#    died mid-inference only encodes the frames it had not finished. Old folders are only read.
 # 8. Pair table: f1→f2 and f2→f3 with dH, dM, d_burst and d_cos. Checks that the f1→f2 burst median is about 0.04.
 # 9. **A**: false conflict rate. 10. **C**: latent cosine vs gallery hop. 11. **B**: empty vs animal bursts.
 # 12. Final summary, ending with `RUN FINISHED`.
 #
 # **Expected time on a T4:** the LILA download (6.5 GB) and extraction take about 5–15 min. TenCrop fp16 inference on 47,928
-# frames takes about 30–50 min. A rerun with `PREV_CACHE` set takes only a few minutes.
+# frames takes about 30–50 min. A rerun that resumes a finished cache takes only a few minutes.
+#
+# **Progress without the Colab tab:** every stage and every 2,048-frame shard updates `progress.json` in the results
+# folder (stage, frames done, frames/s, ETA, time). `stage` is `finished` at the end; if the time stops moving, the
+# runtime has died and running all cells again resumes from the saved shards.
 #
 # **Outputs** (all in the new results folder):
 #
 # | file | content |
 # |---|---|
+# | `progress.json` | live stage, frames done, ETA, last update (the only file that is rewritten) |
 # | `config.json`, `environment.txt` | settings, commits, checkpoint sha256, pip freeze |
 # | `triplets.csv`, `frames.csv` | canonical triplets and their frames (file, location, datetime, label, split) |
 # | `gallery_resolution.json` | gallery size, hour range, Δt_avg, nearest-neighbour spacing |
@@ -86,8 +92,9 @@ MAX_MISSING_FRAC = 0.01   # stop before inference if more than 1% of the triplet
 COPY_TO_LOCAL = True      # 'drive' mode only: copy needed frames to /content/cct20_local with retries
 LOCAL_IMG_DIR = Path('/content/cct20_local')
 
-# Reuse: a previous frame_cache.npz OR a previous results folder; None = compute
-PREV_CACHE = None         # e.g. BASE/'results'/'cct20_phase2_20261121_0930'
+# Reuse: 'auto' = resume from the newest earlier cct20_phase2_* folder that has frame_cache.npz or cache shards;
+#        a path = that frame_cache.npz or results folder; None = compute everything again
+PREV_CACHE = 'auto'       # e.g. BASE/'results'/'cct20_phase2_20261121_0930'
 REUSE_PREDS_NPZ = 'auto'  # 'auto' | False: use gtloc_f12/preds.npz if it maps to frames
 
 # Triplet filter
@@ -122,6 +129,15 @@ if IMAGE_SOURCE == 'drive':
     assert CCT_IMG_DIR.exists(), f'Missing {CCT_IMG_DIR}'
 RESULTS_DIR.parent.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=False)   # fails instead of reusing/overwriting a folder
+
+def heartbeat(stage, **info):
+    """Rewrite RESULTS_DIR/progress.json (atomic replace) so the run can be followed from Drive alone."""
+    rec = dict(stage=stage, updated=_dt.datetime.now().isoformat(timespec='seconds'), **info)
+    tmp = RESULTS_DIR / '.progress.json.tmp'
+    tmp.write_text(json.dumps(rec, indent=2, default=str))
+    os.replace(tmp, RESULTS_DIR / 'progress.json')
+
+heartbeat('setup')
 
 def out(name):
     """Return a NEW path inside RESULTS_DIR; refuse to overwrite anything."""
@@ -342,6 +358,26 @@ def tail_stats(x):
     q = np.percentile(x, [25, 50, 75, 90, 95, 99])
     return dict(n=len(x), median=q[1], iqr=q[2] - q[0], p90=q[3], p95=q[4], p99=q[5], mean=x.mean())
 
+def find_resume_dirs(results_root, experiment, exclude=None):
+    """Earlier `<experiment>_*` folders to resume from, newest first: every folder with cache shards, stopping at
+    (and including) the newest one with a finished frame_cache.npz. A run resumed from an earlier run only writes
+    shards for the frames it encoded itself, so a chain of interrupted runs needs all of their shards.
+    Folder names end in a sortable YYYYMMDD_HHMM stamp."""
+    results_root = Path(results_root)
+    if not results_root.is_dir():
+        return []
+    picked = []
+    for d in sorted(results_root.glob(f'{experiment}_*'), key=lambda x: x.name, reverse=True):
+        if not d.is_dir() or (exclude is not None and Path(d) == Path(exclude)):
+            continue
+        if (d / 'frame_cache.npz').exists():
+            picked.append(d)
+            break
+        if any((d / 'cache_shards').glob('shard_*.npz')):
+            picked.append(d)
+    return picked
+
+
 def list_dir_retry(path, retries=6, backoff=5.0, sleep=time.sleep):
     """One os.scandir listing -> {file name: full path}, with exponential backoff on OSError/TimeoutError.
     Drive FUSE can raise 'A Google Drive timeout has occurred' on huge flat folders. os.walk would silently swallow
@@ -368,6 +404,7 @@ print('Pure functions ready.')
 
 # %%
 # ===== 3b. DATA SOURCE: annotations + images (local disk) =====
+heartbeat('data_source')
 import base64, hashlib, shutil, tarfile, urllib.request
 
 def http_size(url):
@@ -469,6 +506,7 @@ print(f'Image source: {IMAGE_SOURCE} -> {IMAGE_DIR}: {len(avail):,} files listed
 
 # %%
 # ===== 4. CCT20 ANNOTATIONS -> CANONICAL 1 s TRIPLETS =====
+heartbeat('triplets')
 ann = {}
 for s in ANN_SPLITS:
     with open(ann_files[s], 'rb') as fh:
@@ -527,6 +565,7 @@ frames.drop(columns=['path']).to_csv(out('frames.csv'), index=False)
 
 # %%
 # ===== 5. GT-LOC ENCODERS + GALLERY (same as Phase 1) =====
+heartbeat('model')
 import hashlib, gc, gdown
 import torch.nn.functional as F
 
@@ -691,10 +730,21 @@ def load_cache_file(path):
     if path.is_dir() and not (path / 'frame_cache.npz').exists():
         shards = sorted((path / 'cache_shards').glob('shard_*.npz'))   # resume an interrupted run
         for sp in shards:
-            d = np.load(sp, allow_pickle=False)
+            try:
+                d = np.load(sp, allow_pickle=False)
+                d['image_id']
+            except Exception as exc:   # a shard cut short when the runtime died: its frames are encoded again
+                print(f'Skipping unreadable {sp}: {type(exc).__name__}')
+                continue
+            if 'meta' in d.files:
+                m = json.loads(str(d['meta']))
+                if m.get('tencrop') != TENCROP or m.get('ckpt_sha256') != CKPT_SHA256:
+                    print(f'Skipping {sp.name}: settings differ {m}')
+                    continue
             for i, iid in enumerate(d['image_id'].astype(str)):
-                cache[iid] = {k: d[k][i] for k in CACHE_FIELDS}
-        print(f'Loaded {len(cache):,} frames from {len(shards)} shards in {path}')
+                if iid not in cache:   # newer folders are loaded first and win
+                    cache[iid] = {k: d[k][i] for k in CACHE_FIELDS}
+        print(f'Cache now holds {len(cache):,} frames after {len(shards)} shards in {path}')
         return
     if path.is_dir():
         path = path / 'frame_cache.npz'
@@ -703,15 +753,23 @@ def load_cache_file(path):
     if meta and (meta.get('tencrop') != TENCROP or meta.get('ckpt_sha256') != CKPT_SHA256):
         print('WARNING: PREV_CACHE settings differ:', meta)
     for i, iid in enumerate(d['image_id'].astype(str)):
-        cache[iid] = {k: d[k][i] for k in CACHE_FIELDS}
-    print(f'Loaded {len(d["image_id"]):,} cached frames from {path}')
+        if iid not in cache:
+            cache[iid] = {k: d[k][i] for k in CACHE_FIELDS}
+    print(f'Cache now holds {len(cache):,} frames after {path}')
 
-if PREV_CACHE:
+if PREV_CACHE == 'auto':
+    PREV_CACHE = [str(d) for d in find_resume_dirs(RESULTS_DIR.parent, EXPERIMENT, exclude=RESULTS_DIR)]
+    print('Resuming from:', PREV_CACHE if PREV_CACHE else 'nothing (no earlier cache or shards)')
+    for d in PREV_CACHE:
+        load_cache_file(d)
+elif PREV_CACHE:
     load_cache_file(PREV_CACHE)
 
 require_frames(frames)
 todo = frames[~frames['image_id'].isin(cache)].reset_index(drop=True)
 print(f'Frames to encode: {len(todo):,} / {len(frames):,}')
+heartbeat('inference', frames_total=len(frames), frames_cached=len(frames) - len(todo), frames_todo=len(todo),
+          resumed_from=PREV_CACHE)
 
 if len(todo) and IMAGE_SOURCE == 'drive' and COPY_TO_LOCAL:
     LOCAL_IMG_DIR.mkdir(parents=True, exist_ok=True)
@@ -781,6 +839,7 @@ shard_dir = RESULTS_DIR / 'cache_shards'
 shard_dir.mkdir(exist_ok=False)
 def flush(buf, k):
     np.savez(out(f'cache_shards/shard_{k:05d}.npz'), image_id=np.array(buf['image_id']),
+             meta=np.array(json.dumps({'tencrop': TENCROP, 'fp16': USE_FP16, 'ckpt_sha256': CKPT_SHA256})),
              **{f: np.stack(buf[f]) for f in CACHE_FIELDS})
 
 if len(todo):
@@ -801,7 +860,10 @@ if len(todo):
         if len(buf['image_id']) >= SHARD_SIZE:
             flush(buf, k); k += 1; buf = {f: [] for f in CACHE_FIELDS + ['image_id']}
             el = time.time() - t0
-            print(f'{done:,}/{len(todo):,} frames | {done/el:.1f} fr/s | ETA {(len(todo)-done)/(done/el)/60:.1f} min')
+            eta = (len(todo) - done) / (done / el) / 60
+            print(f'{done:,}/{len(todo):,} frames | {done/el:.1f} fr/s | ETA {eta:.1f} min')
+            heartbeat('inference', frames_done=done, frames_todo=len(todo), fps=round(done / el, 2),
+                      eta_min=round(eta, 1), shards_written=k)
     if buf['image_id']:
         flush(buf, k)
     print(f'Encoded {done:,} frames in {(time.time()-t0)/60:.1f} min')
@@ -851,6 +913,7 @@ if FP16_CALIB_N and USE_FP16:
 
 # %%
 # ===== 8. PAIR TABLE + BURST CHECK =====
+heartbeat('experiments')
 fi = {iid: k for k, iid in enumerate(order)}
 tl = triplets.set_index('seq_id')
 rows = []
@@ -1018,6 +1081,7 @@ out('environment.txt').write_text(subprocess.run([sys.executable, '-m', 'pip', '
                                                  capture_output=True, text=True).stdout)
 print(json.dumps(summary, indent=2, default=str))
 print('\n' + '=' * 60)
+heartbeat('finished', summary='summary.json')
 print('RUN FINISHED')
 print('Results folder:', RESULTS_DIR)
 print('=' * 60)
