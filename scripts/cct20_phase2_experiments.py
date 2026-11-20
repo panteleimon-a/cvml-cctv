@@ -808,9 +808,9 @@ summary = {
     'locations': int(triplets['location'].nunique()), 'triplet_variant': pick, 'triplet_stats': tstats,
     'f12_dburst_median': med12,
     'FCR_overall_%': {f'{t}h': float(A_overall[f'FCR_{t}h_%'].iloc[0]) for t in FCR_THRESHOLDS_H},
-    'C_counts': dict(zip(C_counts['class'], C_counts['n'].astype(int))),
-    'B_median_dburst': dict(zip(B_lab['tlabel'], B_lab['median'].astype(float))),
-    'B_p95_dburst': dict(zip(B_lab['tlabel'], B_lab['p95'].astype(float))),
+    'C_counts': {c: int(n) for c, n in zip(C_counts['class'], C_counts['n'])},
+    'B_median_dburst': {lab: float(v) for lab, v in zip(B_lab['tlabel'], B_lab['median'])},
+    'B_p95_dburst': {lab: float(v) for lab, v in zip(B_lab['tlabel'], B_lab['p95'])},
     'gallery': gal_res, 'ir_fraction': float(frames['is_ir'].mean()),
 }
 cfg = {k: (str(v) if isinstance(v, Path) else v) for k, v in dict(
