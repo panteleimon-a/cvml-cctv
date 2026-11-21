@@ -272,10 +272,44 @@ The pre-agreed reading of these three experiments was: if C is mostly gallery ho
 
 **Night IR should stay a separate report.** Frame IR rate is 70.5%. FCR is 10.94% / 1.96% by day and 30.71% / 14.57% at night. Because `cvt.npy` has no stamps between 22:43 and 04:57, a large night FCR is expected even without a true time jump: night frames are forced onto dawn or dusk. Any follow-up that pools day and night will mix that gallery limitation with genuine instability.
 
-Taken together, the run does not yet justify jumping to a motion-attention design on the C criterion, and it does not show that gallery discretisation (as implemented) is the main source of 0.5 h / 1 h conflicts. The sharper empirical facts are the day/night FCR gap, the night-only animal–empty burst gap, and the poor behaviour of camera 100. A cautious next step is to keep those strata separate, inspect camera 100, and only then decide whether a soft readout, a night-aware gallery, or a motion-robust head is the better first intervention. Codec work remains deferred.
+Taken together, the argmax run does not yet justify jumping to a motion-attention design on the C criterion, and it does not show that gallery discretisation (as implemented) is the main source of 0.5 h / 1 h conflicts. The sharper empirical facts are the day/night FCR gap, the night-only animal–empty burst gap, and the poor behaviour of camera 100. A top-k softmax readout was run afterwards as a follow-up, not because hops dominated; the results, and what they change about this reading, are in section 7 and in `docs/PHASE2_TOPK.md`. Codec work remains deferred.
+
+## 7. Corrections after top-k analysis
+
+A training-free top-k softmax readout was applied offline to the same 47,928 embeddings (no new image inference). The recommended setting is \(k=200\), \(\tau=10^{-4}\). Cosine scores on this gallery are almost flat (median top-1 score 0.0052; median top-1 to top-5 gap \(1.4\times 10^{-5}\)), so any \(\tau\gtrsim 10^{-3}\) is effectively uniform. \(k=1\) reproduces the argmax baseline in section 2. Full tables, figures and the method are in [`PHASE2_TOPK.md`](PHASE2_TOPK.md) and `docs/phase2_data/topk/`. The points below are the ones that correct or qualify the argmax write-up.
+
+### (a) GT-Loc vs a constant predictor on CCT20
+
+The top-k readout left accuracy essentially unchanged (ToD MAE 5.98 h → 6.00 h overall; 3.16 → 3.16 h by day; 7.17 → 7.19 h at night; ToY 77.1 → 77.0 days). That is not a success on accuracy: a single constant predictor — the circular mean of the true capture times, 3.80 h and month 4.86 — has ToD MAE **5.05 h** and ToY MAE 76.3 days, which is better than GT-Loc on this set (`sanity.json`). Uniform guessing has expected ToD MAE 6.00 h and ToY MAE 91.3 days, so ToY is near chance for both the model and the constant.
+
+The same overall constant, scored separately on each IR group, is not a fair per-group baseline (day 7.36 h, night 4.08 h), because 3.80 h is pulled toward the night-heavy sample. This run did not save circular-mean constants fitted inside each group; those figures are therefore not reported here. `scripts/topk_readout.py` now records `per_group_constant_predictor` if the analysis is re-run.
+
+### (b) Night gallery gap (22:43–04:57) and the MAE floor
+
+`cvt.npy` covers only 4.96–22.72 h (about 04:57–22:43), as already noted in section 1. Of all frames, 32.8% were captured inside that gap, and **46.4% of night-IR frames**. The oracle ToD MAE floor — distance to the nearer gallery edge, else zero — is 0.00 h by day, **0.70 h at night**, and 0.50 h overall. Neither argmax nor top-k ever predicts a time inside the gap (0% of predictions). The readout cannot invent night stamps the gallery does not contain. Night ToD MAE remains ~7.17 h, far above the 0.70 h floor, so the gap is a real constraint but not the whole accuracy failure.
+
+### (c) Experiment B, night animal/empty ratio, under top-k vs argmax
+
+Under argmax the night animal/empty median \(d_{\mathrm{burst}}\) ratio was 2.5× (0.0465 / 0.0186). Under \(k=200\), \(\tau=10^{-4}\) it narrows to 1.8× (0.0474 / 0.0262). The animal median barely moves; the empty median rises because a continuous readout almost never yields \(dH=0\) (0% of pairs), whereas argmax had \(dH=0\) on 16.9% of pairs, many of them near-static empty IR frames that stayed on the same stamp. Day remains close to equal (0.0358 vs 0.0338). The Phase-2 night B contrast is therefore partly an argmax-discreteness effect and should not be read as a pure motion signal.
+
+### (d) Experiment C: hop/other does not apply to continuous output
+
+The `gallery_hop` / `other` / `no_jump` split is defined on a change of retrieved gallery index and on \(dH\) near the 0.526 h average step. A weighted circular mean has no index to hop, and \(dH=0\) almost never occurs, so those labels do not apply. In their place, C' reports \(P(dH>0.5\,\mathrm{h}\mid d_{\cos}\le 0.05)\): **23.8% under argmax, 17.0% under \(k=200\), \(\tau=10^{-4}\)**. Spearman(\(d_{\cos}\), \(d_{\mathrm{burst}}\)) rises from 0.37 to 0.45. Pair stability improves, but this does not repair time-of-day skill.
+
+### FCR under the recommended readout
+
+For reference, FCR at 0.5 h / 1 h, argmax → \(k=200\), \(\tau=10^{-4}\):
+
+- Overall: 24.87% / 10.85% → 18.34% / 6.31%.
+- Day/colour: 10.94% / 1.96% → 6.52% / 0.94%.
+- Night IR: 30.71% / 14.57% → 23.30% / 8.55%.
+
+The night/day gap remains large. Because GT-Loc already loses to a constant ToD predictor, a further readout tweak is the wrong next step; see `PHASE2_TOPK.md` for the method and the full grid.
 
 ## Sources
 
 - Drive folder `MyDrive/Colab Notebooks/CCTV/results/cct20_phase2_20261120_1751/` ([open](https://drive.google.com/drive/folders/1_HkHSZdCc-Fuu8sbC5ET_LMGBJ8khCsE)).
-- Local copies: `docs/phase2_data/` (CSVs and JSON under ~200 KB) and `docs/phase2_figures/`.
+- Top-k analysis artefacts: [Drive](https://drive.google.com/drive/folders/1L23MFWeC3e9klmUJHOK1YlUXB-_awVIl); local copies in `docs/phase2_data/topk/` and `docs/phase2_figures/topk_fcr_vs_*.png`. Write-up: `docs/PHASE2_TOPK.md`.
+- Local copies of the argmax run: `docs/phase2_data/` (CSVs and JSON under ~200 KB) and `docs/phase2_figures/`.
 - Class logic: `scripts/cct20_phase2_experiments.py`, function `classify_jump`, also in `notebooks/CCT20_PHASE2_EXPERIMENTS.ipynb`. Mid-band and hop-at-any-\(dH\) counts were recomputed from Drive `pairs.csv` with that function and checked against `C_class_counts_*.csv`.
+- Top-k readout: `scripts/topk_readout.py`.
