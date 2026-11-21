@@ -165,6 +165,114 @@ def test_real_eccv18_annotations_if_available():
     assert g['build_triplets'](im, 'ge3')[1]['triplets'] == 16122
 
 
+def test_find_resume_dirs():
+    g = {'Path': Path}
+    exec(cell('===== 3. PURE'), g)
+    root = Path(tempfile.mkdtemp())
+    f = lambda **k: [d.name for d in g['find_resume_dirs'](root, 'cct20_phase2', **k)]
+    assert g['find_resume_dirs'](root / 'nope', 'cct20_phase2') == []
+
+    def mk(name, shard=False, cache=False, truncated_cache=False):
+        d = root / name
+        (d / 'cache_shards').mkdir(parents=True)
+        if shard:
+            (d / 'cache_shards' / 'shard_00000.npz').write_bytes(b'x')
+        if truncated_cache:
+            (d / 'frame_cache.npz').write_bytes(b'x')       # died during np.savez
+        elif cache:
+            np.savez(d / 'frame_cache.npz', image_id=np.array(['a']))
+        return d
+
+    mk('cct20_phase2_20261118_0900', cache=True)            # older than the finished cache: not needed
+    mk('cct20_phase2_20261119_0900', shard=True, cache=True)
+    mk('cct20_phase2_20261120_0100', shard=True, truncated_cache=True)
+    mk('cct20_phase2_20261120_1200', truncated_cache=True)  # no shards of its own
+    mk('cct20_phase2_20261120_1351', shard=True)
+    mk('cct20_phase2_20261120_1700')                        # empty: died before inference
+    cur = mk('cct20_phase2_20261121_1000', shard=True)
+    mk('other_20261122_1000', shard=True)
+    assert f() == ['cct20_phase2_20261121_1000', 'cct20_phase2_20261120_1351',
+                   'cct20_phase2_20261120_0100', 'cct20_phase2_20261119_0900']
+    assert f(exclude=cur) == ['cct20_phase2_20261120_1351', 'cct20_phase2_20261120_0100',
+                              'cct20_phase2_20261119_0900']
+    assert g['finished_frame_cache'](root / 'cct20_phase2_20261119_0900' / 'frame_cache.npz')
+    assert not g['finished_frame_cache'](root / 'cct20_phase2_20261120_0100' / 'frame_cache.npz')
+    assert not g['finished_frame_cache'](root / 'missing.npz')
+
+
+def test_load_cache_sources_memory_and_rules():
+    import json as _json, tracemalloc
+    g = {'Path': Path, 'json': _json}
+    exec(cell('===== 3. PURE'), g)
+    fields = ['z', 'top1_idx', 'top1_score', 'top2_idx', 'top2_score', 'ir_score']
+    root = Path(tempfile.mkdtemp()) / 'cct20_phase2_20261120_1351'
+    (root / 'cache_shards').mkdir(parents=True)
+    rng = np.random.default_rng(0)
+    n = 2048
+
+    def shard(k, ids, meta=None):
+        extra = {} if meta is None else {'meta': np.array(_json.dumps(meta))}
+        np.savez(root / 'cache_shards' / f'shard_{k:05d}.npz', image_id=np.array(ids),
+                 z=rng.normal(size=(len(ids), 512)).astype(np.float32), top1_idx=np.arange(len(ids)),
+                 top1_score=np.ones(len(ids)), top2_idx=np.arange(len(ids)), top2_score=np.ones(len(ids)),
+                 ir_score=np.ones(len(ids)), **extra)
+
+    shard(0, [f'a{i}' for i in range(n)])                                         # Colab shard, no meta
+    shard(1, [f'b{i}' for i in range(n)], {'tencrop': True, 'ckpt_sha256': 'S'})
+    shard(2, ['c0'], {'tencrop': False, 'ckpt_sha256': 'S'})                     # other settings: skipped
+    (root / 'cache_shards' / 'shard_00003.npz').write_bytes(b'cut short')         # truncated: skipped
+    cache = {}
+    tracemalloc.start()
+    used = g['load_cache_sources'](root, cache, fields, True, 'S')
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert len(cache) == 2 * n and 'c0' not in cache
+    assert [p.name for p in used] == ['shard_00000.npz', 'shard_00001.npz']
+    assert cache['a5']['z'].shape == (512,)
+    # two shards of 2048 x 512 float32 are 8 MB; the per-frame re-read would need gigabytes
+    assert peak < 64 * 2**20, peak
+
+
+def test_load_cache_sources_truncated_npz_uses_shards():
+    import json as _json
+    g = {'Path': Path, 'json': _json}
+    exec(cell('===== 3. PURE'), g)
+    fields = ['z', 'top1_idx', 'top1_score', 'top2_idx', 'top2_score', 'ir_score']
+    root = Path(tempfile.mkdtemp())
+
+    def shard(folder, image_id, score):
+        d = root / folder
+        (d / 'cache_shards').mkdir(parents=True)
+        np.savez(d / 'cache_shards' / 'shard_00000.npz', image_id=np.array([image_id]),
+                 meta=np.array(_json.dumps({'tencrop': True, 'ckpt_sha256': 'abc'})),
+                 z=np.full((1, 512), score, np.float32),
+                 top1_idx=np.array([1]), top1_score=np.array([score]),
+                 top2_idx=np.array([2]), top2_score=np.array([score - 0.1]),
+                 ir_score=np.array([1.0]))
+        return d
+
+    bad = shard('bad', 'from-shard', 0.5)
+    (bad / 'frame_cache.npz').write_bytes(b'x')
+    cache = {}
+    used = g['load_cache_sources'](bad, cache, fields, True, 'abc')
+    assert set(cache) == {'from-shard'}
+    assert np.isclose(cache['from-shard']['top1_score'], 0.5)
+    assert [p.name for p in used] == ['shard_00000.npz']
+
+    good = shard('good', 'from-shard', 0.5)
+    np.savez(good / 'frame_cache.npz', image_id=np.array(['from-npz']),
+             meta=np.array(_json.dumps({'tencrop': True, 'ckpt_sha256': 'abc'})),
+             z=np.ones((1, 512), np.float32),
+             top1_idx=np.array([3]), top1_score=np.array([0.9]),
+             top2_idx=np.array([4]), top2_score=np.array([0.2]),
+             ir_score=np.array([2.0]))
+    cache = {}
+    used = g['load_cache_sources'](good, cache, fields, True, 'abc')
+    assert set(cache) == {'from-npz'}
+    assert np.isclose(cache['from-npz']['top1_score'], 0.9)
+    assert [p.name for p in used] == ['frame_cache.npz']
+
+
 def test_classifiers_and_rates():
     g = pure()
     cls = g['classify_jump']([1, 1, 1, 0, 1], [0.5, 2.0, 0.5, 0, 0.01], [5e-5, 0.2, 0.01, 0, 5e-5], step_h=0.526)
@@ -223,7 +331,7 @@ def test_postprocessing_cells_end_to_end():
              C2=rng.integers(0, len(gal), n), S1=s1, S2=s1 - 0.01, IRS=np.where(frames.is_ir, 0.5, 20.0),
              G_HOUR=g['frac_hour'](gal[:, 2], gal[:, 3], gal[:, 4]), G_MONTH=g['frac_month'](gal[:, 0], gal[:, 1]),
              f12_td=None, HOP_STEP=0.526, tstats={}, pick='ge3', gal_res={}, REPO_COMMIT='x', CKPT_SHA256='y',
-             subprocess=subprocess, sys=sys, Path=Path)
+             subprocess=subprocess, sys=sys, Path=Path, heartbeat=lambda *a, **k: None)
     for tag in ['===== 8. PAIR', '===== 9. EXPERIMENT A', '===== 10. EXPERIMENT C',
                 '===== 11. EXPERIMENT B', '===== 12. SUMMARY']:
         exec(cell(tag), g)
