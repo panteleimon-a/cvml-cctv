@@ -1,0 +1,48 @@
+{
+  "results_dir": "/content/drive/MyDrive/Colab Notebooks/CCTV/results/cct20_phase2_20261120_1751",
+  "triplets": 15976,
+  "frames": 47928,
+  "locations": 18,
+  "triplet_variant": "eq3",
+  "triplet_stats": {
+    "images_in": 57864,
+    "frame_base": 1,
+    "seqs_dropped_dup_frame": 1,
+    "seqs_with_frames_123": 17122,
+    "seqs_bad_datetime": 0,
+    "seqs_gap_not_1s": 1146,
+    "triplets": 15976,
+    "frames": 47928,
+    "locations": 18
+  },
+  "f12_dburst_median": 0.0445749489328133,
+  "FCR_overall_%": {
+    "0.5h": 24.869,
+    "1.0h": 10.848
+  },
+  "C_counts": {
+    "other": 25549,
+    "no_jump": 5185,
+    "feature_shift": 1218
+  },
+  "B_median_dburst": {
+    "animal": 0.040698375405171835,
+    "empty": 0.026617014053745242
+  },
+  "B_p95_dburst": {
+    "animal": 0.34713789152171776,
+    "empty": 0.26893778434956483
+  },
+  "gallery": {
+    "n_rows": 16656,
+    "hour_min": 4.955555555555556,
+    "hour_max": 22.72,
+    "dt_avg_h_deck_formula": 0.5262968299711815,
+    "unique_hour_values": 3266,
+    "median_spacing_unique_hours_h": 0.004444000000000337,
+    "median_nn_dH_h_torus": 0.03111111111111242,
+    "median_nn_dburst_torus": 0.005376344086021649,
+    "hop_step_h_used": 0.5262968299711815
+  },
+  "ir_fraction": 0.7046194291437156
+}

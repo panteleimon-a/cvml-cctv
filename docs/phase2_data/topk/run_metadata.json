@@ -1,0 +1,33 @@
+{
+  "phase2_run": "cct20_phase2_20261120_1751",
+  "resume_shards": "cct20_phase2_20261120_1351/cache_shards plus 1751/cache_shards (all 47,928 frames)",
+  "gtloc_commit": "6e7d9d2745d15a101b3b4dd05151807af77831ea",
+  "ckpt_sha256": "387a9bc7999ebebe2748df532b93f9beb2365311aefefb63d5957b553a9a4af7",
+  "ks": [
+    1,
+    5,
+    10,
+    20,
+    50,
+    100,
+    200,
+    500
+  ],
+  "taus": [
+    1e-06,
+    3e-06,
+    1e-05,
+    3e-05,
+    0.0001,
+    null
+  ],
+  "tau_inf": "uniform weights",
+  "ir_thresh": 2.0,
+  "recommended": {
+    "k": 200,
+    "tau": 0.0001
+  },
+  "drive_folder": "https://drive.google.com/drive/folders/1L23MFWeC3e9klmUJHOK1YlUXB-_awVIl",
+  "phase2_drive_folder": "https://drive.google.com/drive/folders/1_HkHSZdCc-Fuu8sbC5ET_LMGBJ8khCsE",
+  "note": "Offline CPU run on 2026-11-21 (Europe/Athens). No image inference. Command-line paths are not stored here; pass --run_dir, --cache, --gtloc_repo, --ckpt and --out to scripts/topk_readout.py."
+}

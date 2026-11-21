@@ -1,0 +1,11 @@
+{
+  "n_rows": 16656,
+  "hour_min": 4.955555555555556,
+  "hour_max": 22.72,
+  "dt_avg_h_deck_formula": 0.5262968299711815,
+  "unique_hour_values": 3266,
+  "median_spacing_unique_hours_h": 0.004444000000000337,
+  "median_nn_dH_h_torus": 0.03111111111111242,
+  "median_nn_dburst_torus": 0.005376344086021649,
+  "hop_step_h_used": 0.5262968299711815
+}
