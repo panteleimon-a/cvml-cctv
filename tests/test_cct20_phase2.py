@@ -79,6 +79,92 @@ def test_triplets_and_labels():
     assert len(g['build_triplets'](im0, 'ge3')[0]) == 3
 
 
+def test_label_rule_union_and_order_invariance():
+    g = pure()
+    cats = [{'id': 30, 'name': 'empty'}, {'id': 1, 'name': 'opossum'}]
+    imgs = [{'id': i, 'file_name': f'{i}.jpg', 'datetime': '2012-01-01 00:00:00'} for i in ('a', 'b', 'c', 'd')]
+    a1 = {'images': imgs[:2], 'categories': cats,
+          'annotations': [{'image_id': 'a', 'category_id': 30}, {'image_id': 'b', 'category_id': 30}]}
+    # second split repeats image b with an animal annotation, and adds an image with no annotation
+    a2 = {'images': imgs[1:], 'categories': cats,
+          'annotations': [{'image_id': 'b', 'category_id': 1}, {'image_id': 'c', 'category_id': 30},
+                          {'image_id': 'c', 'category_id': 30}]}
+    results = []
+    for order in (['s1', 's2'], ['s2', 's1']):
+        src = {'s1': a1, 's2': a2}
+        im, an, cat, _ = g['load_cct_images']({k: src[k] for k in order})
+        lab = dict(zip(im['id'], g['image_labels'](im, an, cat)))
+        results.append(lab)
+        diag = g['label_diagnostics'](an, cat)
+        assert diag['mixed_empty_and_animal'] == 1
+    assert results[0] == results[1] == {'a': 'empty', 'b': 'animal', 'c': 'empty', 'd': 'unlabeled'}
+    assert 'ALL' in g['LABEL_RULE']
+
+
+def test_conflicting_category_ids_raise():
+    g = pure()
+    d1 = {'images': [], 'annotations': [], 'categories': [{'id': 30, 'name': 'empty'}]}
+    d2 = {'images': [], 'annotations': [], 'categories': [{'id': 30, 'name': 'deer'}]}
+    try:
+        g['load_cct_images']({'a': d1, 'b': d2})
+    except ValueError:
+        return
+    raise AssertionError('conflicting category ids were accepted')
+
+
+def test_missing_frame_guard_and_empty_frames():
+    g = pure()
+    assert g['check_missing_frames'](0, 47928, []) == 0
+    assert g['check_missing_frames'](479, 47928, ['x.jpg']) < 0.01
+    for n_missing, n_total in [(47928, 47928), (480, 47928), (0, 0)]:
+        try:
+            g['check_missing_frames'](n_missing, n_total, ['x.jpg'], 0.01)
+        except RuntimeError as exc:
+            assert 'image file' in str(exc) or 'No triplet frames' in str(exc)
+        else:
+            raise AssertionError((n_missing, n_total))
+    try:
+        g['require_frames'](pd.DataFrame())
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('empty frames accepted')
+
+
+def test_list_dir_retry():
+    g = pure()
+    d = Path(tempfile.mkdtemp())
+    (d / 'a.jpg').write_bytes(b'x')
+    assert set(g['list_dir_retry'](d)) == {'a.jpg'}
+    try:
+        g['list_dir_retry'](d / 'missing', retries=2, backoff=0, sleep=lambda s: None)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('missing folder listed')
+
+
+def test_real_eccv18_annotations_if_available():
+    """Optional regression on the official JSONs: set CCT20_ANN_DIR to eccv_18_annotation_files/."""
+    import json
+    import os
+    folder = os.environ.get('CCT20_ANN_DIR')
+    if not folder:
+        print('skip: CCT20_ANN_DIR not set')
+        return
+    g = pure()
+    splits = ['train', 'cis_val', 'cis_test', 'trans_val', 'trans_test']
+    ann = {s: json.loads(Path(folder, f'{s}_annotations.json').read_text()) for s in splits}
+    im, an, cat, n_raw = g['load_cct_images'](ann)
+    assert n_raw == len(im) == 57864
+    im['datetime'] = g['parse_datetimes'](im['datetime'])
+    im['label'] = g['image_labels'](im, an, cat)
+    assert im['label'].value_counts().to_dict() == {'animal': 53850, 'empty': 4014}
+    t, st = g['build_triplets'](im, 'eq3')
+    assert (st['triplets'], st['frames'], st['locations']) == (15976, 47928, 18)
+    assert g['build_triplets'](im, 'ge3')[1]['triplets'] == 16122
+
+
 def test_classifiers_and_rates():
     g = pure()
     cls = g['classify_jump']([1, 1, 1, 0, 1], [0.5, 2.0, 0.5, 0, 0.01], [5e-5, 0.2, 0.01, 0, 5e-5], step_h=0.526)
