@@ -358,9 +358,22 @@ def tail_stats(x):
     q = np.percentile(x, [25, 50, 75, 90, 95, 99])
     return dict(n=len(x), median=q[1], iqr=q[2] - q[0], p90=q[3], p95=q[4], p99=q[5], mean=x.mean())
 
+def finished_frame_cache(path):
+    """True when frame_cache.npz opens and has image ids. np.savez creates the file before the embedding
+    table is written, so a dead runtime can leave a truncated file next to complete shards."""
+    try:
+        with np.load(path, allow_pickle=False) as d:
+            if 'image_id' not in d.files:
+                return False
+            d['image_id']
+        return True
+    except Exception:
+        return False
+
 def find_resume_dirs(results_root, experiment, exclude=None):
     """Earlier `<experiment>_*` folders to resume from, newest first: every folder with cache shards, stopping at
-    (and including) the newest one with a finished frame_cache.npz. A run resumed from an earlier run only writes
+    (and including) the newest one with a finished frame_cache.npz. A truncated frame_cache.npz is not finished;
+    its shards stay in the chain and the walk continues. A run resumed from an earlier run only writes
     shards for the frames it encoded itself, so a chain of interrupted runs needs all of their shards.
     Folder names end in a sortable YYYYMMDD_HHMM stamp."""
     results_root = Path(results_root)
@@ -370,7 +383,7 @@ def find_resume_dirs(results_root, experiment, exclude=None):
     for d in sorted(results_root.glob(f'{experiment}_*'), key=lambda x: x.name, reverse=True):
         if not d.is_dir() or (exclude is not None and Path(d) == Path(exclude)):
             continue
-        if (d / 'frame_cache.npz').exists():
+        if finished_frame_cache(d / 'frame_cache.npz'):
             picked.append(d)
             break
         if any((d / 'cache_shards').glob('shard_*.npz')):
@@ -383,10 +396,14 @@ def load_cache_sources(path, cache, fields, tencrop, ckpt_sha256):
     file to `cache` (image_id -> {field: value}). Frames already in `cache` are kept (newer folders are loaded first
     and win). Shards without `meta` (the first Colab run) are accepted; shards whose meta has other settings and
     unreadable shards (cut short when a runtime died) are skipped, so their frames are encoded again.
+    A truncated frame_cache.npz is not used; the function falls back to that folder's shards.
     Returns the files that added at least one frame (what carry_forward_shards copies)."""
     path = Path(path)
     used = []
-    if path.is_dir() and not (path / 'frame_cache.npz').exists():
+    if path.is_dir() and not finished_frame_cache(path / 'frame_cache.npz'):
+        npz = path / 'frame_cache.npz'
+        if npz.exists():   # truncated final write: the shards already on disk are still usable
+            print(f'Skipping unreadable {npz}; using shards')
         shards = sorted((path / 'cache_shards').glob('shard_*.npz'))   # resume an interrupted run
         for sp in shards:
             try:
@@ -1086,9 +1103,9 @@ summary = {
     'locations': int(triplets['location'].nunique()), 'triplet_variant': pick, 'triplet_stats': tstats,
     'f12_dburst_median': med12,
     'FCR_overall_%': {f'{t}h': float(A_overall[f'FCR_{t}h_%'].iloc[0]) for t in FCR_THRESHOLDS_H},
-    'C_counts': dict(zip(C_counts['class'], C_counts['n'].astype(int))),
-    'B_median_dburst': dict(zip(B_lab['tlabel'], B_lab['median'].astype(float))),
-    'B_p95_dburst': dict(zip(B_lab['tlabel'], B_lab['p95'].astype(float))),
+    'C_counts': {c: int(n) for c, n in zip(C_counts['class'], C_counts['n'])},
+    'B_median_dburst': {lab: float(v) for lab, v in zip(B_lab['tlabel'], B_lab['median'])},
+    'B_p95_dburst': {lab: float(v) for lab, v in zip(B_lab['tlabel'], B_lab['p95'])},
     'gallery': gal_res, 'ir_fraction': float(frames['is_ir'].mean()),
 }
 cfg = {k: (str(v) if isinstance(v, Path) else v) for k, v in dict(

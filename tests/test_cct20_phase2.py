@@ -172,23 +172,32 @@ def test_find_resume_dirs():
     f = lambda **k: [d.name for d in g['find_resume_dirs'](root, 'cct20_phase2', **k)]
     assert g['find_resume_dirs'](root / 'nope', 'cct20_phase2') == []
 
-    def mk(name, shard=False, cache=False):
+    def mk(name, shard=False, cache=False, truncated_cache=False):
         d = root / name
         (d / 'cache_shards').mkdir(parents=True)
         if shard:
             (d / 'cache_shards' / 'shard_00000.npz').write_bytes(b'x')
-        if cache:
-            (d / 'frame_cache.npz').write_bytes(b'x')
+        if truncated_cache:
+            (d / 'frame_cache.npz').write_bytes(b'x')       # died during np.savez
+        elif cache:
+            np.savez(d / 'frame_cache.npz', image_id=np.array(['a']))
         return d
 
     mk('cct20_phase2_20261118_0900', cache=True)            # older than the finished cache: not needed
     mk('cct20_phase2_20261119_0900', shard=True, cache=True)
+    mk('cct20_phase2_20261120_0100', shard=True, truncated_cache=True)
+    mk('cct20_phase2_20261120_1200', truncated_cache=True)  # no shards of its own
     mk('cct20_phase2_20261120_1351', shard=True)
     mk('cct20_phase2_20261120_1700')                        # empty: died before inference
     cur = mk('cct20_phase2_20261121_1000', shard=True)
     mk('other_20261122_1000', shard=True)
-    assert f() == ['cct20_phase2_20261121_1000', 'cct20_phase2_20261120_1351', 'cct20_phase2_20261119_0900']
-    assert f(exclude=cur) == ['cct20_phase2_20261120_1351', 'cct20_phase2_20261119_0900']
+    assert f() == ['cct20_phase2_20261121_1000', 'cct20_phase2_20261120_1351',
+                   'cct20_phase2_20261120_0100', 'cct20_phase2_20261119_0900']
+    assert f(exclude=cur) == ['cct20_phase2_20261120_1351', 'cct20_phase2_20261120_0100',
+                              'cct20_phase2_20261119_0900']
+    assert g['finished_frame_cache'](root / 'cct20_phase2_20261119_0900' / 'frame_cache.npz')
+    assert not g['finished_frame_cache'](root / 'cct20_phase2_20261120_0100' / 'frame_cache.npz')
+    assert not g['finished_frame_cache'](root / 'missing.npz')
 
 
 def test_load_cache_sources_memory_and_rules():
@@ -222,6 +231,46 @@ def test_load_cache_sources_memory_and_rules():
     assert cache['a5']['z'].shape == (512,)
     # two shards of 2048 x 512 float32 are 8 MB; the per-frame re-read would need gigabytes
     assert peak < 64 * 2**20, peak
+
+
+def test_load_cache_sources_truncated_npz_uses_shards():
+    import json as _json
+    g = {'Path': Path, 'json': _json}
+    exec(cell('===== 3. PURE'), g)
+    fields = ['z', 'top1_idx', 'top1_score', 'top2_idx', 'top2_score', 'ir_score']
+    root = Path(tempfile.mkdtemp())
+
+    def shard(folder, image_id, score):
+        d = root / folder
+        (d / 'cache_shards').mkdir(parents=True)
+        np.savez(d / 'cache_shards' / 'shard_00000.npz', image_id=np.array([image_id]),
+                 meta=np.array(_json.dumps({'tencrop': True, 'ckpt_sha256': 'abc'})),
+                 z=np.full((1, 512), score, np.float32),
+                 top1_idx=np.array([1]), top1_score=np.array([score]),
+                 top2_idx=np.array([2]), top2_score=np.array([score - 0.1]),
+                 ir_score=np.array([1.0]))
+        return d
+
+    bad = shard('bad', 'from-shard', 0.5)
+    (bad / 'frame_cache.npz').write_bytes(b'x')
+    cache = {}
+    used = g['load_cache_sources'](bad, cache, fields, True, 'abc')
+    assert set(cache) == {'from-shard'}
+    assert np.isclose(cache['from-shard']['top1_score'], 0.5)
+    assert [p.name for p in used] == ['shard_00000.npz']
+
+    good = shard('good', 'from-shard', 0.5)
+    np.savez(good / 'frame_cache.npz', image_id=np.array(['from-npz']),
+             meta=np.array(_json.dumps({'tencrop': True, 'ckpt_sha256': 'abc'})),
+             z=np.ones((1, 512), np.float32),
+             top1_idx=np.array([3]), top1_score=np.array([0.9]),
+             top2_idx=np.array([4]), top2_score=np.array([0.2]),
+             ir_score=np.array([2.0]))
+    cache = {}
+    used = g['load_cache_sources'](good, cache, fields, True, 'abc')
+    assert set(cache) == {'from-npz'}
+    assert np.isclose(cache['from-npz']['top1_score'], 0.9)
+    assert [p.name for p in used] == ['frame_cache.npz']
 
 
 def test_classifiers_and_rates():
